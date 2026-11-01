@@ -287,12 +287,16 @@ void render_line(const uint8_t *vram, const uint8_t *palette, const LineRegs &re
 					regs.p1_lo - view.origin, regs.p1_lo - view.origin + 256);
 		else if (use_wide && wide->centred)
 		{
-			// The card, in the middle of the view (and only its own 160 pixels
-			// until it starts to move).
+			// The card, in the middle of the view. Its text lives in the ring
+			// beyond the screen's right edge, slides in from there and leaves
+			// there again. The ring is 256 pixels round and the view up to 270, so
+			// drawn all round the ring would show the part beyond the right edge
+			// again at the far left: one lap is drawn, from the screen's left
+			// edge, and only the screen's own 160 pixels until the card moves.
 			View card = view;
 			card.origin = view.card_origin;
-			const int lo = wide->card_hold ? -card.origin : 0;
-			const int hi = wide->card_hold ? 160 - card.origin : MAX_WIDTH;
+			const int lo = -card.origin;
+			const int hi = lo + (wide->card_hold ? 160 : 256);
 			draw_scroll_plane(vram, p, card, 0x1000, line, regs.s1x, regs.s1y, 0x40, lo, hi);
 		}
 		else

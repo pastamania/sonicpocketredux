@@ -25,6 +25,7 @@ add_library(ngpc STATIC
     src/ngpc/level_map.cpp
     src/ngpc/machine.cpp
     src/ngpc/sprite_trace.cpp
+    src/ngpc/wide_levels.cpp
     src/ngpc/wide_sprites.cpp
     src/ngpc/t6w28.cpp
     src/common/png.cpp

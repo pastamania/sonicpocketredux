@@ -59,6 +59,10 @@ struct Frame
 // 21 columns.
 constexpr int WIDE_LEFT_COLS = 14; // columns held to the left of the screen's first
 constexpr int WIDE_COLS = 52;      // tile columns held: 416 pixels
+// A wide view moves the level up and down on the screen to ease the camera (see
+// Interpolator::ease_at) by at most this many pixels, which uncovers that much
+// above or below the screen: the game must keep its sprites and objects there.
+constexpr int WIDE_EASE_MARGIN = 12;
 struct WideScene
 {
 	bool active = false;
@@ -86,6 +90,14 @@ struct WideScene
 	// lap of the ring the block is in, so every column shows once, where it is.
 	bool p1_window = false;
 	int p1_lo = 0;
+	// The same for plane 1's rows when each has its own scroll (the act clear's
+	// lines of text), which are not in the same lap: for each row of the hardware
+	// map, where its window starts (HIDDEN_ROW: draw nothing) and the row's scroll
+	// register at the time, from which each line's window follows.
+	static constexpr int HIDDEN_ROW = -100000;
+	bool p1_rows = false;
+	int p1_row_lo[32] = {};
+	int p1_row_s1x[32] = {};
 	int world_x = 0;               // world x of screen x 0 on the first line
 	int level_width = 0;           // pixels
 	// The part of the world the camera can show: the level's edge margins and

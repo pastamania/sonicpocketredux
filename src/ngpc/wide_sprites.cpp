@@ -2,6 +2,7 @@
 
 #include "cpu/tlcs900/instruction_hook.h"
 #include "cpu/tlcs900/tlcs900.h"
+#include "ngpc/k2ge_render.h"
 
 namespace ngpc {
 
@@ -30,6 +31,20 @@ constexpr uint8_t FLAG_C = 0x01, FLAG_Z = 0x40;
 constexpr uint32_t RECT_CULL = 0x39D874;
 constexpr uint8_t REG_WA = 0xD8;
 
+// Their vertical counterparts, for the camera's easing (see Interpolator), which
+// moves the level up and down by up to WIDE_EASE_MARGIN pixels on the screen and
+// so shows that much more above or below it:
+//   0x23C0E6 and 0x23C18C  after  CP DE,0x9E  (CopySprites, both loops): DE is
+//                          the sprite's y plus 7, kept if 0 <= DE <= 0x9E
+//   0x39D882  after  CP HL,BC  (the rectangle test, vertical half): HL is the
+//                          object's y less the camera's plus half its height, BC
+//                          twice that plus 152; kept when HL < BC, unsigned
+constexpr uint32_t SPRITE_CULL_Y_1 = 0x23C0E6;
+constexpr uint32_t SPRITE_CULL_Y_2 = 0x23C18C;
+constexpr uint32_t RECT_CULL_Y = 0x39D882;
+constexpr uint8_t REG_HL = 0xDB;
+constexpr int SPRITE_Y_LIMIT = 0x9E;
+
 // Where the game confines the player to the screen (sub_39C47E, called after
 // the player moves): the screen x of the player, in IX, is compared with a
 // bound loaded into BC just before each compare.
@@ -39,6 +54,19 @@ constexpr uint8_t REG_WA = 0xD8;
 //   0x3A10E7  IX = camera range start - 0x48
 //   0x3A10EB  IY = camera range end + 0xE8
 // compared at 0x3A10EF.
+// The two flapping bird robots of the fifth zone's flight (level 8) wait where
+// they are made, not drawn, until they are on the screen's edge, by their own
+// test (the other enemies there wait on the rectangle test above, which is
+// widened):
+//   0x3E2BDD  CALL 0x39D849   IX = the object's x less the camera's
+//   0x3E2BE1  CP IX,0xB4
+//   0x3E2BE5  RET NC          the hook sits here: wait while IX >= 0xB4
+// A wide view that shows 55 pixels beyond the screen's edge would see them start
+// from there, ahead of where they should come in from; with the margin they start
+// that much further out, beyond the picture, and fly in.
+constexpr uint32_t BIRD_WAKE = 0x3E2BE5;
+constexpr int BIRD_WAKE_X = 0xB4;
+
 constexpr uint32_t PLAYER_LEFT = 0x39C499;
 constexpr uint32_t PLAYER_RIGHT = 0x39C4A0;
 constexpr uint32_t BOSS0_BOUNDS = 0x3A10EF;
@@ -98,6 +126,37 @@ void rect_cull(tlcs900_device &cpu, void *)
 		cpu.m_sr.b.l &= static_cast<uint8_t>(~FLAG_C);
 }
 
+void sprite_cull_y(tlcs900_device &cpu, void *)
+{
+	cull(cpu, REG_DE, SPRITE_Y_LIMIT, k2ge_render::WIDE_EASE_MARGIN);
+}
+
+void rect_cull_y(tlcs900_device &cpu, void *)
+{
+	if (s_margin == 0)
+		return;
+	const int value = static_cast<int16_t>(*cpu.get_reg16_current(REG_HL));
+	const int limit = static_cast<int16_t>(*cpu.get_reg16_current(REG_BC));
+	const int margin = k2ge_render::WIDE_EASE_MARGIN;
+	if (value >= -margin && value < limit + margin)
+		cpu.m_sr.b.l |= FLAG_C;
+	else
+		cpu.m_sr.b.l &= static_cast<uint8_t>(~FLAG_C);
+}
+
+void bird_wake(tlcs900_device &cpu, void *)
+{
+	if (s_margin == 0)
+		return;
+	// RET NC waits when carry is clear: carry is set to go on, as CP IX,0xB4
+	// would have for an unsigned IX below the wider limit.
+	const unsigned value = *cpu.get_reg16_current(REG_IX);
+	if (value < static_cast<unsigned>(BIRD_WAKE_X + s_margin))
+		cpu.m_sr.b.l |= FLAG_C;
+	else
+		cpu.m_sr.b.l &= static_cast<uint8_t>(~FLAG_C);
+}
+
 void player_left(tlcs900_device &cpu, void *)
 {
 	if (s_arena)
@@ -136,6 +195,10 @@ void set_wide_sprite_margin(int extra)
 		tlcs900_hook::add(SPRITE_CULL_2, sprite_cull);
 		tlcs900_hook::add(OBJECT_CULL, object_cull);
 		tlcs900_hook::add(RECT_CULL, rect_cull);
+		tlcs900_hook::add(SPRITE_CULL_Y_1, sprite_cull_y);
+		tlcs900_hook::add(SPRITE_CULL_Y_2, sprite_cull_y);
+		tlcs900_hook::add(RECT_CULL_Y, rect_cull_y);
+		tlcs900_hook::add(BIRD_WAKE, bird_wake);
 		tlcs900_hook::add(PLAYER_LEFT, player_left);
 		tlcs900_hook::add(PLAYER_RIGHT, player_right);
 		tlcs900_hook::add(BOSS0_BOUNDS, boss0_bounds);

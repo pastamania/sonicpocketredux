@@ -106,13 +106,38 @@ black bars. The game is told to keep the sprites and objects of the extra
 width (it normally drops anything off the 160-pixel screen), so a platform or
 an enemy is there as the wide picture reaches it. The zone's title card is
 centred over the level, which is already where it will be. Where the camera is
-locked at the end of an act 1 and in the boss arenas of the first two zones,
-the level is shown beyond the screen instead of black bars and the player may
-walk to the edges of the picture; the first zone's boss goes the whole width. The third zone's boss is as it was. Those are
+locked at the end of an act 1 and in the boss arenas (every zone's boss but the
+third's, which has no lock, and the last fight), the level is shown beyond the
+screen instead of black bars and the player may walk to the edges of the picture,
+on a floor the wide view fills in where the level's data stops short (the last 64
+pixels of the level, never seen before; where an arena's last wall ends before the
+data does, the wall's last column of tiles is repeated); the first zone's boss goes
+the whole width. The third zone's boss is as it was. The fifth zone's flight shows its
+plane once (it is a picture the game slides, which wrapped round into the extra width),
+and its two flapping bird robots start beyond the picture and fly in. Those are
 the things a wide view does to the game itself: objects wake up a little
 earlier, the player and the first boss get more room, and the longer sprite
 list can move the game's tick by a frame, so a recording made in one aspect plays
-back exactly only in that aspect.
+back exactly only in that aspect. A wide view also eases the vertical camera, which
+the game starts and stops abruptly (the horizontal one follows Sonic's speed): the
+level and the sprites move together, up to 12 pixels from where the game has them,
+and the game keeps the sprites of that margin above and below the screen as it does
+those at the sides.
+
+The picture is fitted to the window by `--scale-mode`: `sharp` (the default; F8 cycles
+the modes and the choice is remembered) fills the window with evenly wide pixels at any
+size, `integer` uses whole multiples with bars (270 x 7 = 1890 pixels at 1080p), and
+`nearest` is plain scaling, which gives pixels of two different widths unless the window
+happens to be a whole multiple. F11 or Alt+Enter toggles borderless fullscreen. The window
+is made with a high pixel density, so a Retina display is drawn in its own pixels and not
+scaled up (and softened) by the system. The sound is kept `--audio-latency` frames deep
+(default 2, about 36 ms; it raises itself by a frame if the device runs dry), where it was
+4 (about 67 ms). `--frame-delay` (`auto`, `off` or milliseconds) waits before reading the
+buttons so that they are read late in the refresh; `auto` does this only where a refresh is
+12 ms or longer (60 Hz) and is off on a faster display, where there is little to gain.
+`--stats` reports how long a key press takes to reach a presented picture and how deep the
+sound queue was. `--window WIDTHxHEIGHT` sets the window's size, and `--screenshot file.png
+[--screenshot-at FRAME]` writes the window's picture (in the display's pixels) and quits.
 
 Options: `--scale N` (window size, default 4), `--japanese`,
 `--no-smoothing` (show only the game's own frames),

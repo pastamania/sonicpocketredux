@@ -92,6 +92,9 @@ public:
 	const uint8_t *sound_ram() const { return m_sound_ram; }
 	const uint8_t *io_registers() const { return m_io; }
 	const std::vector<uint8_t> &cartridge() const { return m_cart; }
+	// The cartridge as the game reads it, for the host to change level data in
+	// (see wide_levels.h). The game's save area is the last 32 KiB of it.
+	std::vector<uint8_t> &cartridge_data() { return m_cart; }
 	int64_t cpu_cycle() const { return m_cpu_cycle; }
 
 	// tlcs900_bus

@@ -7,6 +7,7 @@
 #include "ngpc/machine.h"
 #include "ngpc/level_map.h"
 #include "ngpc/sprite_trace.h"
+#include "ngpc/wide_levels.h"
 #include "ngpc/wide_sprites.h"
 
 #include <algorithm>
@@ -85,7 +86,7 @@ void usage()
 		"                [--reference-offset K] [--input input.txt] [--check-render] [--interp-frames a,b,c]\n"
 		"                [--sprite-tables first-last] [--check-trace] [--interp-metrics]\n"
 		"                [--bookmarks file] [--radius N] [--aspect original|16:10|16:9] [--check-wide]\n"
-		"                [--level N] [--warp frame,x,y]\n";
+		"                [--level N] [--warp frame,x,y] [--no-end-fill]\n";
 }
 
 } // namespace
@@ -106,6 +107,7 @@ int main(int argc, char **argv)
 	int tables_first = -1, tables_last = -1;   // frames whose sprite tables are printed
 	bool check_trace = false;
 	bool interp_metrics = false;
+	bool no_end_fill = false;   // --no-end-fill: leave the last 64 pixels of the levels as the game has them
 	bool check_wide = false;
 	int forced_level = -1;
 	int warp_frame = -1, warp_x = 0, warp_y = 0;   // --warp: put the player somewhere else in the level
@@ -157,6 +159,7 @@ int main(int argc, char **argv)
 		}
 		else if (arg == "--check-trace") check_trace = true;
 		else if (arg == "--interp-metrics") interp_metrics = true;
+		else if (arg == "--no-end-fill") no_end_fill = true;
 		else if (arg == "--check-wide") check_wide = true;
 		else if (arg == "--level") forced_level = std::stoi(next());
 		else if (arg == "--warp")
@@ -345,6 +348,7 @@ int main(int argc, char **argv)
 		{
 			++wide_frames;
 			const ngpc::LevelRam level_ram = ngpc::read_level_ram(machine);
+			ngpc::extend_level_ends(machine, level_ram, aspect != k2ge_render::Aspect::Original && !no_end_fill);
 			const bool active = level_map->build(machine.video().frame(), level_ram, *wide_scene);
 			if (aspect != k2ge_render::Aspect::Original)
 			{

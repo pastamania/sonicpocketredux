@@ -58,6 +58,43 @@ more than four pixels per player tick. Static code also includes conditions
 that suppress downward or backward correction; these likely cover grounded
 camera stability, death, scripted movement, and stage-specific locks.
 
+## Vertical easing in a wide view
+
+Measured on a recording of the first zone (3136 frames): the horizontal camera follows
+the player's speed, so its step from one game tick to the next ramps up and down
+by itself (3, 3, 4, 3, 4, 5 pixels), but the vertical camera does not move until
+the player leaves its window, then moves at once at its full catch-up speed (8 or
+9 pixels a tick: `0, 0, 0, 9, 8, 7, 7`) and stops dead (`-10, -11, -10, 0, 0`).
+Steps that change by 8 pixels or more between ticks happened 21 times vertically
+and 11 horizontally, and a presented picture only fills in between the game's
+steps, so the start and stop were as abrupt as on the machine, more visibly at a
+higher rate.
+
+A wide view (`Interpolator::ease_at`, `ease_step`) therefore follows the game's
+vertical camera with a smoothed one: two cascaded first-order filters (each closing
+half of the gap a frame, so the speed is continuous: it picks up and comes to
+rest over about five frames), kept within 12 pixels (`WIDE_EASE_MARGIN`) of the
+game's. The level is drawn at the smoothed scroll (the level's maps hold the rows
+it uncovers, 4 above and 7 below the screen) and every sprite but the HUD and the
+title card's moves with it, rounded once so the level and sprites do not shift
+against each other. The result on that recording: speed changes of 3 pixels a
+frame or more went from 59 to 4, of 4 or more from 28 to 1 (what is left is the
+camera jumping, which restarts the filter: a respawn, a warp). The cost is that
+Sonic sits up to 12 pixels higher or lower on the screen than the game put him
+while the camera catches up (more than 8 pixels on 5% of frames of that recording).
+
+The game drops a hardware sprite that touches none of the screen's 152 lines
+(`CopySprites`, `CP DE,0x9E` at `0x23C0E3` and `0x23C189`, the JRs after them at
+`0x23C0E6` and `0x23C18C`) and the vertical half of the rectangle test of `0x39D858`
+(`CP HL,BC`, the JR at `0x39D882`), so the strips the easing uncovers would be empty
+and objects would appear in them as they reached the screen. With a wide view
+`wide_sprites.cpp` widens those two tests by 12 pixels, as it does the horizontal
+ones (objects' own vertical test, `CP BC,0x118` at `0x23C23D`, is already 64
+pixels loose). The picture is eased only while the level is shown from the level
+maps with the game's own sprite list, and not for the title card or the act clear,
+whose planes are pictures fixed to the screen. The original aspect is as the machine
+drew it, and so is `--no-smoothing`.
+
 ## Runtime validation
 
 The BizHawk player tracer records all camera fields. A directed capture remains

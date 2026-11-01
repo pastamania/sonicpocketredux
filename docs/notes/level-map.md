@@ -111,14 +111,26 @@ moved (`WideScene::card_hold`: plane 1's scroll is still what it was when the ca
 first showed) plane 1 is drawn only for the card's own 160 pixels, and the text
 appears at the edges as it starts to move, as it leaves the same way at the end.
 
+Once it moves, plane 1 is drawn for one lap of the ring only, 256 pixels from
+the screen's left edge. The text slides in from beyond the screen's right edge
+and goes out the same way, and the ring is 256 pixels round while the view is up
+to 270: drawn all round, the ring's last 14 columns, which are the right edge's
+too, showed again at the far left, so the end of the sentence flashed there as the
+text came in and went again as it moved on.
+
 **Act ends and boss arenas.** At the end of an act 1 the camera stops at the
 level's end for the capsule (its range collapses to one position, `x_end`); in the
 first zone's boss arena the range collapses where the boss was placed
 (`Boss0_Load` calls `DoBossCam_X` with the boss's x minus `0x40`); in the second
-zone's it is 80 pixels wide. A wide view would be clipped to that range and
-left black on the sides. `wide_arena(ram)` says when this is such a place, by the
-level number (`0x67D2`: 0, 2, 4, 6, 10 are act 1s, 1 and 3 the first and second
-zone's bosses) and a range under 160 pixels, and then the whole level is shown
+zone's it is 80 pixels wide; in the fourth zone's (level 7) it is 16 (6336..6352), in
+the fifth's (level 9) 0 to 16 (4288..4304), in the sixth's (level 11) 320 wide while
+the boss comes in (3480..3800) and then 0 to 40 (3736..3736, 3716..3756), and the
+last fight (level 12) is 480..504, 504..504 and later 424..504. A wide view would
+be clipped to that range and left black on the sides (black bars on both sides of
+every one of those fights before they were added). `wide_arena(ram)` says when this
+is such a place, by the level number (`0x67D2`: 0, 2, 4, 6, 10 are act 1s, 1, 3, 7,
+9 and 11 the bosses of the zones and 12 the last fight; `arena_level`) and a range
+under 160 pixels, and then the whole level is shown
 (`WideScene::arena`, the view centred) and `wide_sprites.cpp` gives the game's
 limits on the screen the wider room, below. The level is at least 64 pixels
 wider than the camera's last position, so the view never leaves it. The third
@@ -131,7 +143,41 @@ and its pictures are the same as without this.
 | 1 | zone 1 boss (`Boss0_*`, `boss0_main` `0x3A103F`) | as above, and the boss turns round that much further out |
 | 3 | zone 2 boss | as above, the boss is as it was |
 | 5 | zone 3 boss | nothing |
-| 7, 8, 9, 11, 12 | other ends | nothing (not looked at) |
+| 7, 9, 11 | zone 4, 5 and 6 bosses (sprites, no plane 1 block) | as for 3 (the player went to both edges of a 16:9 view in each, the bosses went on fighting him) |
+| 12 | the last fight | as for 3 |
+| 8 | zone 5 act 1 | nothing (the camera is never locked) |
+
+**Past the last wall.** The level 7 arena's data stops at x 6528, 16 pixels past the
+last position the camera can show (6512), with a brick pillar at the end, and a
+view reaching 55 pixels further saw the flat backdrop colour beyond it. The scene
+(`LevelMap::scene_entry`) repeats the last tile column of plane 2's last non-blank
+block column over the blank ones after it, for the arena levels, so the wall goes
+on; the hardware map comparison and the game's edits use the level data as it is.
+Levels whose last columns the end fill below has filled have no such columns and
+look as before (compared on the act ends and bosses of 0 to 4, 6 and 10).
+
+**The fifth zone's flight (level 8).** The plane Sonic stands on is not made of sprites:
+it is a picture in plane 1's ring (the plane is 12 tiles wide in a ring of 32), which the
+game slides by changing plane 1's scroll (`s1x` goes 146 to 2 as it comes in from the
+left, and 2 to 157 - 256 as it moves to the right of the screen, 101 pixels). The ring is
+256 pixels and a 270-pixel view saw it twice: as the plane came in from the left, its
+back showed again at the right edge. `plane1_block_level(ram)` (level 8) has
+`LevelMap::build` use the one-lap window of a boss's block (`p1_window`), whose lap is
+the one the player's task is in (`LevelRam::player_x`, the task at `0x6708`, x at `+0x12`,
+less the camera's; the plane's middle was 9 pixels to its left in every frame from the
+plane's first appearance to its resting place). Plane 2 and the sprites are as before.
+
+**The flapping bird robots.** Two of the zone's enemies wait where they are made until their
+own test lets them go: after `CALL 0x39D849` (the object's x less the camera's, in IX) the
+routine at `0x3E2BD7` does `CP IX,0xB4` / `RET NC` (`0x3E2BE1`, `0x3E2BE5`). The other
+enemies of the zone (the propeller robots) wait on the rectangle test, which `wide_sprites.cpp`
+widens, so they start where a wide view's edge is. These two did not widen, so they started at
+x 177 whatever the view, inside a view that shows 55 pixels more: one at the top (y -15), one
+below (y 161), each gliding left along its edge, which a wide view showed as a bird that
+appears from nowhere. The hook at `0x3E2BE5` (`bird_wake`) lets them go at `0xB4` plus the
+margin: they now start at x 232 (16:9) or 222 (16:10), beyond the picture, and fly in along
+the edge. Their path from there is the same: they turn at x 131 (checked: the same x and y
+from there as in the original, 54 frames later).
 
 **The game edits its own map.** Rings are tiles of plane 1, and the game wipes
 a collected ring by writing `0x0000` over its four tiles in the hardware map;
@@ -207,8 +253,51 @@ while the boss is well off screen and draws it again at the same edge). Checked
 over 9000 frames of the first zone's fight, to both ends of its patrol: the
 window's middle was never more than 48 pixels from the boss. The second zone's
 pod enters from the right, beyond the edge of the screen, and first appears
-there. Lines of text that scroll by themselves (the act clear's) are not
-windowed.
+there.
+
+**The act clear's text.** The "Sonic got through" screen (a task in
+`0x3CE60A-0x3CE7F7`, found with the walk of the task list, `LevelRam::act_clear`)
+puts each line of text in tile rows of plane 1, each with a scroll value of its
+own (the game changes the register between lines), and slides them in by
+changing it: "SONIC GOT" from the left, "THROUGH" and the bonuses from the
+right. Each is a run of tiles in the 256-pixel ring, and while it waits beyond
+the screen it lies in the 96 pixels of ring the screen does not show, where a
+view wider than the screen sees it from both sides: the 55 pixels at each edge are
+that same stretch, so a line coming in from the right also stood at the far left. Each row therefore gets a window of its own (`WideScene::p1_rows`,
+`p1_row_lo`; the same one-lap window as above, in `Interpolator::push` shifted by
+the row's scroll): the lap in which the run lies on the screen, or, while it lies
+wholly beyond, the lap of the way it last moved (an increasing scroll moves text
+left, in from the right), and until it has moved with its text drawn, not drawn
+at all, as the original does not show it before it slides in.
+(The game sets a row's scroll before drawing the text, so a first jump of the
+scroll says nothing about the way.) A row of text with every tile of the ring
+filled has nothing to tell apart and is drawn from -48 to 208. Checked on the act
+clears of levels 0, 2 and 4, from the first line to the fade-out, at 16:9.
+
+**The last 64 pixels of a level.** The data of every level runs two blocks (64
+pixels) beyond the camera's last position plus the screen (`x_end + 160`), and the
+game never shows them, so they were left unfinished: where the last screen ends in
+a floor, a row of platforms or a wall, the two columns after it are block 0 (blank),
+and the view of an arena, which reaches 55 pixels into them, showed a flat colour
+there, and the player, who may walk to the edge of that view, ran off the end of the
+floor and died. In the second zone's first act the row of platforms ended exactly at
+the screen's edge. `wide_levels.cpp` fills them in: in the arena levels
+(`arena_level`: 0 to 4, 6, 7, 9 to 12), the blank blocks of those two columns of plane 2's
+layout take the block two columns to their left, row by row, so the same tiles go on
+and a row of platforms continues; the game's collision reads the same layout, so
+the floor is there (the player was walked along the filled floor of the second zone's
+first act to the edge of the view, and on to the end of the act). It is done in the
+machine's copy of the cartridge, for a header the first time it is seen, only while
+the view is wide, and is put back when the view returns to the original aspect
+(`extend_level_ends`; `ngpc-run --no-end-fill` leaves the data alone, to compare).
+A column that holds one block all the way down is unfinished too, whatever the block:
+the fifth zone's last act (level 9) ends in two columns of sky (block 1) past the end of
+the deck and the base's interior, so a 16:9 view of the run to the end of the act showed a
+strip of sky where the floor stopped; those two columns now take the two before them, and the
+floor and walls go on to the edge of the view. It changes the levels 2 (28 bytes of the
+layout), 3 (4), 4 (125), 6 (50), 9 (78) and 10 (43); 0 and 1 had nothing missing. The other levels' ends were not changed: their
+cameras stop at the level's end, the view does not reach past it, and the player
+stays on the screen.
 
 **The player and the first boss in an arena.** After the player moves, the game
 keeps his screen x between 12 and 148 (`sub_39C47E` at `0x39C47E`: `LDW BC,0x0C`
@@ -274,9 +363,12 @@ switching to the centred view is not visible).
 ## Not covered
 
 - Special stages have not been looked at.
-- Act ends and bosses of the levels not listed above (7 to 9, 11, 12) are as the
-  game has them; the other act 1 ends were seen on levels 0, 2, 4 and 6 (level
-  10's was not reached).
+- Level 5 (the third zone's boss) and level 8 are as the game has them (no
+  camera lock there; their pictures are the same as without the arena changes).
+  The act 1 ends were seen on levels 0, 2, 4 and 6 (level 10's was not reached),
+  and the bosses of 7, 9, 11 and 12 only with a scripted player that runs to
+  both edges of a 16:9 view: whether each boss's own turn-round limits (other
+  than the first boss's) allow the new room was seen, not measured.
 - Anything the game changes in the map while the tile is off screen would not
   be seen. It has not been observed: the game's edits are made where Sonic is.
 - Objects that act before they are drawn: `IsOnScreen` (`0x39F4AC`) and

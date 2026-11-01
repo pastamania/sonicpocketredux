@@ -40,6 +40,7 @@ LevelRam read_level_ram(Machine &machine)
 	ram.camera_x_start = word(LEVEL_CAMERA_X_START);
 	ram.camera_x_end = word(LEVEL_CAMERA_X_END);
 	ram.level = machine.read_byte(LEVEL_NUMBER);
+	ram.player_x = static_cast<int16_t>(word(PLAYER_TASK + 0x12)) - ram.camera_x;
 
 	// The title card and the bosses are tasks of their own: walk the (circular)
 	// list.
@@ -55,6 +56,8 @@ LevelRam read_level_ram(Machine &machine)
 			if (ram.card_owner_count < CARD_TASKS)
 				ram.card_owner[ram.card_owner_count++] = record;
 		}
+		if (function >= ACT_CLEAR_FIRST && function < ACT_CLEAR_END)
+			ram.act_clear = true;
 		if (function >= BOSS_CODE_FIRST && function < BOSS_CODE_END && ram.boss_count < BOSS_TASKS)
 			ram.boss_x[ram.boss_count++] = static_cast<int16_t>(word(record + 0x12)) - ram.camera_x;
 		record = word(record + TASK_NEXT);
@@ -67,8 +70,17 @@ LevelRam read_level_ram(Machine &machine)
 
 bool arena_level(const LevelRam &ram)
 {
-	static constexpr bool ARENA_LEVEL[13] = { true, true, true, true, true, false, true, false, false, false, true, false, false };
+	// Every level that locks the camera: the end of each act 1 (0, 2, 4, 6, 10)
+	// and the boss fights (1, 3, 7, 9, 11 and the final one, 12). Not 5 (the
+	// third zone's boss: the camera never narrows) or 8 (no lock).
+	static constexpr bool ARENA_LEVEL[13] = { true, true, true, true, true, false, true, true, false, true, true, true, true };
 	return ram.header != 0 && ram.level >= 0 && ram.level < 13 && ARENA_LEVEL[ram.level];
+}
+
+
+bool plane1_block_level(const LevelRam &ram)
+{
+	return ram.header != 0 && ram.level == 8;
 }
 
 
@@ -120,6 +132,14 @@ uint16_t LevelMap::entry(const Header &header, int plane, int column, int row) c
 }
 
 
+uint16_t LevelMap::scene_entry(const Header &header, int plane, int column, int row, bool extend) const
+{
+	if (extend && plane == 1 && m_last_column >= 0 && column / 4 > m_last_column && column / 4 < header.width)
+		column = m_last_column * 4 + 3;
+	return entry(header, plane, column, row);
+}
+
+
 bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_render::WideScene &scene)
 {
 	using namespace k2ge_render;
@@ -136,6 +156,16 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 		m_edits.clear();
 		m_card_seen = false;
 	}
+	// (Every frame: the end fill of wide_levels.cpp may have put blocks in the
+	// last columns since. It is a few columns from the end at most.)
+	m_last_column = -1;
+	for (int column = header.width - 1; column >= 0 && m_last_column < 0; column--)
+		for (int row = 0; row < header.height; row++)
+			if (rom_word(header.layout[1] + 2 * (row * header.width + column)) != 0)
+			{
+				m_last_column = column;
+				break;
+			}
 
 	const LineRegs &top = frame.line[0];
 	const int level_width = header.width * 32;
@@ -250,6 +280,9 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 	}
 	else if (top.s1x != m_card_s1x)
 		m_card_moved = true;
+	if (!ram.act_clear)
+		for (RowTrack &track : m_rows)
+			track = RowTrack();
 	scene.card_hold = ram.title_card && !m_card_moved;
 	// Where the camera is locked in an act's end or a boss arena, the level
 	// itself is shown beyond the screen (the camera's range would leave it black).
@@ -279,9 +312,104 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 		if (frame.line[line].s1x != top.s1x)
 			uniform = false;
 	scene.p1_window = false;
-	if (!scene.arena)
+	scene.p1_rows = false;
+	const bool block_level = plane1_block_level(ram);
+	if (!scene.arena && !block_level)
 		m_p1_known = false;
-	if (scene.arena && !scene.plane1 && uniform)
+	if (ram.act_clear && !scene.plane1)
+	{
+		// The act clear's text: each row has its own scroll and its own lap.
+		// A row of text is a run of tiles in the ring. It is either in view or in
+		// the 96 pixels the screen does not show, and from there it comes in from
+		// the left or the right: the ring is round, so there the two look the
+		// same, and a wide view that sees 55 pixels of it on each side would show it
+		// on both. The lap is the one in which the run is on the screen; a run
+		// waiting beyond the screen is in the lap of the side it last came from
+		// or went to, and is not drawn until it has moved and that is known.
+		scene.p1_window = true;
+		scene.p1_rows = true;
+		for (int ring_row = 0; ring_row < 32; ring_row++)
+		{
+			scene.p1_row_lo[ring_row] = k2ge_render::WideScene::HIDDEN_ROW;
+			scene.p1_row_s1x[ring_row] = 0;
+		}
+		bool done[32] = {};
+		for (int line = 0; line < LINES; line++)
+		{
+			const int ring_row = ((frame.line[line].s1y + line) >> 3) & 31;
+			if (done[ring_row])
+				continue;
+			done[ring_row] = true;
+			RowTrack &track = m_rows[ring_row];
+			const int s1x = frame.line[line].s1x;
+			scene.p1_row_s1x[ring_row] = s1x;
+
+			bool occupied[32] = {};
+			int count = 0;
+			for (int column = 0; column < 32; column++)
+			{
+				const int at = 0x1000 + ring_row * 64 + column * 2;
+				const int tile = frame.vram[at] | (frame.vram[at + 1] << 8);
+				occupied[column] = tile != 0 && tile != BLANK;
+				count += occupied[column];
+			}
+			// Which way a row of text moves is only known from a move it made
+			// with the text there (the game sets a row's scroll before it draws
+			// the text, and that jump says nothing).
+			if (count == 0)
+			{
+				track = RowTrack();
+				continue;
+			}
+			if (track.s1x >= 0)
+			{
+				const int moved = ((s1x - track.s1x + 128) & 255) - 128;
+				if (moved != 0)
+					track.direction = moved > 0 ? 1 : -1;
+			}
+			track.s1x = s1x;
+			if (count == 32)
+			{
+				scene.p1_row_lo[ring_row] = 80 - 128;   // a full row: nothing to tell apart
+				continue;
+			}
+			// The longest empty run of columns ends where the text starts.
+			int gap_start = 0, gap = 0;
+			for (int start = 0; start < 32; start++)
+			{
+				if (occupied[start] || !occupied[(start + 31) % 32])
+					continue;
+				int run = 0;
+				while (!occupied[(start + run) % 32])
+					run++;
+				if (run > gap)
+				{
+					gap = run;
+					gap_start = start;
+				}
+			}
+			const int first = (gap_start + gap) % 32, length = (32 - gap) * 8;
+			const int at = mod(first * 8 - s1x, 256);    // screen x of the run's start, in 0..255
+			auto overlap = [&](int lap) {
+				const int from = at + 256 * lap;
+				return std::max(0, std::min(from + length, 160) - std::max(from, 0));
+			};
+			const int here = overlap(0), left = overlap(-1);
+			int lap = 2;
+			if (here > 0 && left > 0)
+				lap = track.lap != 2 ? track.lap : (here >= left ? 0 : -1);
+			else if (here > 0 || left > 0)
+				lap = here > 0 ? 0 : -1;
+			else if (track.lap != 2)
+				lap = track.lap;
+			else if (track.direction != 0)
+				lap = track.direction > 0 ? 0 : -1;
+			track.lap = lap;
+			if (lap != 2)
+				scene.p1_row_lo[ring_row] = at + 256 * lap + length / 2 - 128;
+		}
+	}
+	else if ((scene.arena || block_level) && !scene.plane1 && uniform)
 	{
 		bool occupied[32] = {};
 		int count = 0;
@@ -320,15 +448,20 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 			// otherwise the one nearest to where the block was.
 			int best = 65;
 			int chosen = centre;
-			for (int j = 0; j < ram.boss_count; j++)
-			{
-				const int lap = centre + 256 * static_cast<int>(std::lround((ram.boss_x[j] - centre) / 256.0));
-				if (std::abs(lap - ram.boss_x[j]) < best)
+			auto consider = [&](int anchor) {
+				const int lap = centre + 256 * static_cast<int>(std::lround((anchor - centre) / 256.0));
+				if (std::abs(lap - anchor) < best)
 				{
-					best = std::abs(lap - ram.boss_x[j]);
+					best = std::abs(lap - anchor);
 					chosen = lap;
 				}
-			}
+			};
+			for (int j = 0; j < ram.boss_count; j++)
+				consider(ram.boss_x[j]);
+			// The plane of the flight is where the player is (a few pixels to
+			// its left: its middle was 9 pixels left of the player's x).
+			if (block_level)
+				consider(ram.player_x - 9);
 			if (best <= 64)
 				centre = chosen;
 			else
@@ -402,7 +535,7 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 				{
 					const auto edited = m_edits.find(key(plane, column, row));
 					scene.entry[plane][ring_row][j] = edited != m_edits.end() ? edited->second
-							: entry(header, plane == 1 ? 1 : 0, column, row);
+							: scene_entry(header, plane == 1 ? 1 : 0, column, row, arena_level(ram));
 				}
 			}
 		}

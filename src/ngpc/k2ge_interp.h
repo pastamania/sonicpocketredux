@@ -63,11 +63,25 @@ public:
 	// How far each sprite is moved from where the game put it in that picture.
 	// In a wide view `left` and `right` are the extra width either side of the
 	// screen, and HUD objects are moved out to the edges.
-	SpriteShift sprite_shift(double s, int left = 0, int right = 0, bool wide = false) const;
+	// `ease_y` is the vertical easing of the picture (see ease_at), which moves
+	// every sprite but the HUD and the title card's.
+	SpriteShift sprite_shift(double s, int left = 0, int right = 0, bool wide = false, int ease_y = 0) const;
 
 	// How far the level's scroll plane is displaced from where the game put it
 	// in that picture (the shift of anything fixed in the world, x and y).
 	void scenery_shift(double s, int &dx, int &dy) const;
+
+	// Vertical camera easing, for wide views. The game's camera sits still until
+	// the player leaves a window and then moves at its full catch-up speed, and
+	// stops dead: horizontally it follows the player's speed, so that axis ramps
+	// up and down by itself. A smoothed camera follows the game's (two first-order
+	// filters, so its speed is continuous: it picks up and comes to rest over a few
+	// frames) and the whole picture is moved by the difference: the level, and every
+	// sprite but the HUD and the title card's. The difference is at most WIDE_EASE_MARGIN pixels (see wide_sprites.h for the sprites the game must keep there).
+	// This is how far, in pixels, the picture's scroll is moved down at `s` of the
+	// way through the last frame (0 when not easing: a view of the stock width, no
+	// level, a title card or the act clear, or the picture as drawn).
+	int ease_at(double s) const;
 
 private:
 	struct Track
@@ -100,6 +114,7 @@ private:
 	};
 
 	void begin_tick(const ngpc::SpriteTable &table, int camera_dx, int camera_dy);
+	void ease_step(const Frame &frame, bool eligible);
 	// How the extra width of a wide view is split: `world_x` is the world x of the
 	// screen's first pixel.
 	void wide_placement(int world_x, int &left, int &right) const;
@@ -118,6 +133,12 @@ private:
 	int64_t m_tick_frame = -1;
 	int m_tick_len = 2;                            // frames between game ticks
 	std::array<Track, 4> m_planes;                 // 1x, 1y, 2x, 2y
+	bool m_ease_have = false;                      // m_ease_pos follows the level plane's y scroll
+	bool m_ease_on = false;                        // this frame's picture is eased
+	int m_ease_last = 0;                           // the level plane's y scroll last frame
+	double m_ease_pos = 0;                         // that, summed without wrapping
+	double m_ease_a = 0, m_ease_b = 0;             // the two stages of the filter
+	double m_ease_prev = 0, m_ease_cur = 0;        // the smoothed scroll last frame and this one
 };
 
 } // namespace k2ge_render

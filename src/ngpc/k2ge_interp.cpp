@@ -13,6 +13,8 @@ constexpr int PLANE_SNAP = 64;
 constexpr int MAX_STEP_FRAMES = 3;
 constexpr int REMEMBER_TICKS = 8;   // how long an object that left the list is remembered
 constexpr size_t REMEMBER_MAX = 32;
+constexpr double EASE_STAGE = 0.5;  // share of the gap each filter stage closes a frame: rest in about 5 frames
+constexpr double EASE_MAX_LAG = WIDE_EASE_MARGIN; // pixels the smoothed camera may trail the game's
 
 int wrapped(int d)
 {
@@ -211,8 +213,16 @@ void Interpolator::push(const Frame &frame, const ngpc::SpriteTable *sprites, co
 		{
 			m_frame.line[line].wx2 = wide->world_x + wrapped(frame.line[line].s2x - frame.line[0].s2x);
 			m_frame.line[line].wx1 = wide->world_x + wrapped(frame.line[line].s1x - frame.line[0].s2x);
-			// The window of plane 1 moves with the plane's scroll.
-			m_frame.line[line].p1_lo = wide->p1_lo - wrapped(frame.line[line].s1x - frame.line[0].s1x);
+			// The window of plane 1 moves with the plane's scroll, and with the
+			// scroll of its own row if the rows are windowed one by one.
+			if (wide->p1_rows)
+			{
+				const int ring_row = ((frame.line[line].s1y + line) >> 3) & 31;
+				m_frame.line[line].p1_lo = wide->p1_row_lo[ring_row] == WideScene::HIDDEN_ROW ? WideScene::HIDDEN_ROW :
+						wide->p1_row_lo[ring_row] - wrapped(frame.line[line].s1x - wide->p1_row_s1x[ring_row]);
+			}
+			else
+				m_frame.line[line].p1_lo = wide->p1_lo - wrapped(frame.line[line].s1x - frame.line[0].s1x);
 		}
 	}
 	else
@@ -258,6 +268,65 @@ void Interpolator::push(const Frame &frame, const ngpc::SpriteTable *sprites, co
 	// A scroll change on a game tick glides for as long as the tick does.
 	for (int k = 0; k < 4; k++)
 		m_planes[k].update(plane[k], LINES, LINES, PLANE_SNAP, m_now, tick ? m_tick_len : 0);
+
+	// Easing needs the level's maps (the rows it uncovers) and the game's own
+	// account of its sprites (to move them with the level), and is not for a
+	// title card or the act clear, whose planes are screen-fixed pictures.
+	ease_step(frame, wide && wide->active && sprites && !wide->centred && !wide->p1_rows);
+}
+
+
+void Interpolator::ease_step(const Frame &frame, bool eligible)
+{
+	// The level plane's y scroll, summed so it does not wrap; a jump (a respawn)
+	// starts the filter again where the game now is.
+	const int y = frame.line[0].s2y;
+	bool restart = !m_ease_have;
+	if (m_ease_have)
+	{
+		const int d = wrapped(y - m_ease_last);
+		if (std::abs(d) > PLANE_SNAP)
+			restart = true;
+		else
+			m_ease_pos += d;
+	}
+	if (restart)
+		m_ease_pos = y;
+	m_ease_have = true;
+	m_ease_last = y;
+
+	// Where the picture shows the plane at this frame's start.
+	const double shown = m_ease_pos - m_planes[3].trailing(0, static_cast<double>(m_now));
+	if (!eligible || restart)
+	{
+		m_ease_a = m_ease_b = m_ease_prev = m_ease_cur = shown;
+		m_ease_on = false;
+		return;
+	}
+	m_ease_prev = m_ease_cur;
+	m_ease_a += EASE_STAGE * (shown - m_ease_a);
+	m_ease_b += EASE_STAGE * (m_ease_a - m_ease_b);
+	m_ease_a = std::clamp(m_ease_a, shown - EASE_MAX_LAG, shown + EASE_MAX_LAG);
+	m_ease_b = std::clamp(m_ease_b, shown - EASE_MAX_LAG, shown + EASE_MAX_LAG);
+	m_ease_cur = m_ease_b;
+	m_ease_on = true;
+}
+
+
+int Interpolator::ease_at(double s) const
+{
+	if (!m_ease_on || s >= MAX_STEP_FRAMES_DRAWN)    // as drawn: the game's own picture
+		return 0;
+	const double t = static_cast<double>(m_now) + s;
+	const double trailing = m_planes[3].trailing(0, t);
+	const double shown = m_ease_pos - trailing;
+	// The smoothed scroll at this moment, carried on from the last two frames.
+	const double smoothed = std::clamp(m_ease_cur + std::min(s, 1.0) * (m_ease_cur - m_ease_prev),
+			shown - EASE_MAX_LAG, shown + EASE_MAX_LAG);
+	// The level is shown at the smoothed scroll rounded once, not at the game's
+	// rounded and moved by a rounded difference, which would flicker by a pixel.
+	return static_cast<int>(std::lround(smoothed)) -
+			(static_cast<int>(std::lround(m_ease_pos)) - static_cast<int>(std::lround(trailing)));
 }
 
 
@@ -269,7 +338,7 @@ void Interpolator::scenery_shift(double s, int &dx, int &dy) const
 }
 
 
-SpriteShift Interpolator::sprite_shift(double s, int left, int right, bool wide) const
+SpriteShift Interpolator::sprite_shift(double s, int left, int right, bool wide, int ease_y) const
 {
 	const double t = static_cast<double>(m_now) + s;
 	SpriteShift shift;
@@ -290,6 +359,10 @@ SpriteShift Interpolator::sprite_shift(double s, int left, int right, bool wide)
 		shift.dy[i] = -static_cast<int>(std::lround(behind * object.dy));
 		if (wide)
 		{
+			// The camera is eased down by `ease_y`, so the world moves up on the
+			// screen, but the HUD (and the card) stays where it is.
+			if (!object.hud && !shift.card[i])
+				shift.dy[i] -= ease_y;
 			shift.ref_x[i] = object.x;
 			// The HUD belongs to the edges of the picture, not to the
 			// stock screen in the middle of it.
@@ -322,7 +395,7 @@ void Interpolator::render(double s, uint32_t *out) const
 	// A wide view: the picture is the level's own width, placed so that it
 	// does not reach past the level's ends.
 	View view = m_view;
-	int left = 0, right = 0, hud_left = 0, hud_right = 0;
+	int left = 0, right = 0, hud_left = 0, hud_right = 0, ease = 0;
 	const bool wide = m_wide.active && view.width > 160;
 	if (wide)
 	{
@@ -330,7 +403,8 @@ void Interpolator::render(double s, uint32_t *out) const
 		{
 			regs[line].wx2 = m_frame.line[line].wx2 - static_cast<int>(std::lround(m_planes[2].trailing(line, t)));
 			regs[line].wx1 = m_frame.line[line].wx1 - static_cast<int>(std::lround(m_planes[0].trailing(line, t)));
-			regs[line].p1_lo = m_frame.line[line].p1_lo + static_cast<int>(std::lround(m_planes[0].trailing(line, t)));
+			regs[line].p1_lo = m_frame.line[line].p1_lo == WideScene::HIDDEN_ROW ? WideScene::HIDDEN_ROW :
+					m_frame.line[line].p1_lo + static_cast<int>(std::lround(m_planes[0].trailing(line, t)));
 		}
 		wide_placement(regs[0].wx2, left, right);
 		view.origin = -left;
@@ -339,9 +413,20 @@ void Interpolator::render(double s, uint32_t *out) const
 		// The HUD keeps to the edges of what is shown, not of the black.
 		hud_left = std::max(0, left - std::max(0, m_wide.min_x - (regs[0].wx2 - left)));
 		hud_right = std::max(0, right - std::max(0, (regs[0].wx2 + 160 + right) - m_wide.max_x));
+
+		// The camera's vertical easing moves the level, and plane 1 with it
+		// when it is a part of the level (it scrolls with it, or holds a boss).
+		ease = ease_at(s);
+		const bool plane1_moves = m_wide.plane1 || (m_wide.p1_window && !m_wide.p1_rows);
+		for (int line = 0; line < LINES; line++)
+		{
+			regs[line].s2y = static_cast<uint8_t>((regs[line].s2y + ease) & 0xff);
+			if (plane1_moves)
+				regs[line].s1y = static_cast<uint8_t>((regs[line].s1y + ease) & 0xff);
+		}
 	}
 
-	const SpriteShift shift = sprite_shift(s, wide ? hud_left : 0, wide ? hud_right : 0, wide);
+	const SpriteShift shift = sprite_shift(s, wide ? hud_left : 0, wide ? hud_right : 0, wide, ease);
 	render_frame(m_frame, regs.data(), view, &shift, out, wide ? &m_wide : nullptr);
 }
 

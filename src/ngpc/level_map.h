@@ -56,6 +56,15 @@ constexpr uint32_t BOSS_CODE_FIRST = 0x3A0EDA;
 constexpr uint32_t BOSS_CODE_END = 0x3A2000;
 constexpr int BOSS_TASKS = 8;
 constexpr int CARD_TASKS = 4;
+// The player's task (x at +0x12), which in the fifth zone's flight (level 8) is
+// the plane's: see plane1_block_level.
+constexpr uint32_t PLAYER_TASK = 0x6708;
+// The act clear (the "Sonic got through" screen, with the bonuses) is a task of
+// this part of the cartridge (the one that draws its lines of text, from
+// 0x3CE66F; the capsule's task before it runs from the level's end on, and is
+// not the text) and runs while the screen is up.
+constexpr uint32_t ACT_CLEAR_FIRST = 0x3CE60A;
+constexpr uint32_t ACT_CLEAR_END = 0x3CE7F7;
 
 // What the game holds in RAM that locates the level, read at the end of a frame.
 struct LevelRam
@@ -64,6 +73,7 @@ struct LevelRam
 	int camera_x = 0, camera_y = 0;
 	int camera_x_start = 0, camera_x_end = 0;
 	bool title_card = false;        // the zone's title card is showing
+	bool act_clear = false;         // the act clear's text is on screen
 	// The records of the card's tasks, which own the sprites of the card (as
 	// opposed to the level's own: the player, the HUD).
 	uint32_t card_owner[CARD_TASKS] = {};
@@ -73,6 +83,8 @@ struct LevelRam
 	// bosses above.
 	int boss_x[BOSS_TASKS] = {};
 	int boss_count = 0;
+	// The same for the player's task.
+	int player_x = 0;
 };
 
 // Whether the camera is locked where a wide view takes the space over: the end
@@ -80,14 +92,23 @@ struct LevelRam
 // boss arenas of the first and second zones. There the original keeps the
 // picture and the player to the 160 pixels of the screen; a wide view shows
 // the level beyond instead and lets the player and the first boss use the
-// whole width. Levels, by their numbers: 0, 2, 4, 6 and 10 are act 1s; 1 and 3
-// end in the first and second zone's boss. The third zone's boss (5) is at the
-// end of its level and its camera is not locked, and the other levels' ends
-// are left as the game has them.
+// whole width. Levels, by their numbers: 0, 2, 4, 6 and 10 are act 1s; 1, 3, 7, 9
+// and 11 end in the boss of a zone and 12 is the last fight. The third zone's
+// boss (5) is at the end of its level and its camera is not locked, nor is
+// level 8's: they are left as the game has them.
 bool wide_arena(const LevelRam &ram);
 
 // Whether the level is one of those, locked or not.
 bool arena_level(const LevelRam &ram);
+
+// Whether the level's plane 1 holds a block that the game moves by scrolling
+// the plane, outside an arena: the fifth zone's flight (level 8), where the
+// plane Sonic stands on is a picture in plane 1's ring that slides in from the
+// left at the start and across the screen to the right. Its ring is shown for
+// one lap, as a boss's block is (WideScene::p1_window), or the plane would
+// also show at the far side as it comes in; the lap is the one the player's
+// task is in.
+bool plane1_block_level(const LevelRam &ram);
 
 class Machine;
 
@@ -124,10 +145,18 @@ private:
 	uint16_t rom_word(uint32_t address) const;
 	bool parse(uint32_t address, Header &header) const;
 	uint16_t entry(const Header &header, int plane, int column, int row) const;
+	// The same, for what a wide view shows beyond the level's data (see
+	// m_last_column): `extend` holds the level's last column on.
+	uint16_t scene_entry(const Header &header, int plane, int column, int row, bool extend) const;
 
 	const std::vector<uint8_t> &m_rom;
 	uint32_t m_header = 0;
 	int m_row_offset = -1;       // ring row of world tile row 0, once found for this level
+	// The last block column of the level (plane 2) that holds anything. An
+	// arena's last wall can end before the level does, and what a wide view shows
+	// beyond it would be the blank of an empty map: scene_entry repeats the last
+	// tile column there, so the wall goes on.
+	int m_last_column = -1;
 	double m_agreement = 0;
 	int m_last_world_x = -1;
 	// Where the block on plane 1 (a boss) was last seen, as the screen x of its
@@ -140,6 +169,18 @@ private:
 	bool m_card_seen = false, m_card_moved = false;
 	int m_card_s1x = 0;
 	int m_p1_centre = 0;
+	// The act clear's text slides in by rows, each by its own scroll, some from
+	// the left and some from the right. For each row of plane 1's map: where its
+	// scroll stood last frame (-1: not seen), which way it last moved (+1: to
+	// the left of the screen, that is in from the right; -1: the other way; 0
+	// not yet), and which lap of the ring its text was last drawn in.
+	struct RowTrack
+	{
+		int s1x = -1;
+		int direction = 0;
+		int lap = 2;           // -1 or 0 (see build), 2: not decided
+	};
+	RowTrack m_rows[32];
 	// Tiles the game has changed since it drew them, by plane, world column
 	// and world row: what it showed the last time the tile was on screen.
 	std::unordered_map<uint64_t, uint16_t> m_edits;
