@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <functional>
 
+#include "ngpc/k2ge_render.h"
+
 class k2ge
 {
 public:
@@ -41,24 +43,14 @@ public:
 
 	uint8_t vram[0x4000] = {};
 
+	// The last frame drawn, with the registers and palettes each line used.
+	// Complete once the frame has ended (machine on_frame_end).
+	const k2ge_render::Frame &frame() const { return m_capture; }
+
 private:
-	struct sprite_t
-	{
-		uint16_t spr_data;
-		uint8_t x;
-		uint8_t y;
-		uint8_t index;
-	};
-
 	void draw(int line);
-	void draw_scroll_plane(uint16_t *p, uint16_t base, int line, int scroll_x, int scroll_y, int pal_base);
-	void draw_sprite_plane(uint16_t *p, uint16_t priority, int line, int scroll_x, int scroll_y);
-	void get_tile_data(int offset_x, uint16_t base, int line, int scroll_y, int pal_base,
-			uint16_t &pcode, bool &hflip, uint16_t &tile_addr, uint16_t &tile_data) const;
-	uint16_t bg_pen() const;
-	uint16_t oow_pen() const;
-	uint32_t pen_to_argb(uint16_t pen) const;
 
+	k2ge_render::Frame m_capture;
 	uint8_t m_wba_h = 0;
 	uint8_t m_wba_v = 0;
 	uint8_t m_wsi_h = 0xff;

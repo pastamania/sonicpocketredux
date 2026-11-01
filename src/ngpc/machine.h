@@ -69,6 +69,16 @@ public:
 	// runtime uses this to hand the finished frame to the host.
 	std::function<void()> on_frame_end;
 
+	// Calls `fn(address, value, is_write)` for every access to main RAM in
+	// [first, last), for tooling. It never changes what the machine does, and
+	// costs one comparison per RAM access when nothing is watched.
+	void watch_ram(uint32_t first, uint32_t last, std::function<void(uint32_t, uint8_t, bool)> fn)
+	{
+		m_watch_first = first;
+		m_watch_last = last;
+		m_watch = std::move(fn);
+	}
+
 	void set_buttons(uint8_t buttons) { m_buttons = buttons; }
 
 	// Prints the next `count` instructions' PC and registers to stderr.
@@ -163,6 +173,10 @@ private:
 	bool m_hblank_pending = false;     // HBlank pin raised this line
 	bool m_frame_done = false;
 	int64_t m_trace_remaining = 0;
+
+	uint32_t m_watch_first = 0;
+	uint32_t m_watch_last = 0;
+	std::function<void(uint32_t, uint8_t, bool)> m_watch;
 };
 
 } // namespace ngpc

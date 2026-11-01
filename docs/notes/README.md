@@ -14,6 +14,8 @@ traces and ValleyBell's disassembly. Addresses are cartridge (`0x2xxxxx`,
 | [player.md](player.md) | Player task fields, states and physics |
 | [collision.md](collision.md) | Player collision pipeline and angle-aware sensors |
 | [camera.md](camera.md) | Camera origin, stage bounds and follow logic |
+| [sprites.md](sprites.md) | Sprite object list, how it becomes hardware sprites, and who owns each entry |
+| [level-map.md](level-map.md) | Level header, layouts and block table, how the game fills the tile map, and the wide view |
 
 These notes are the starting point for rewriting systems as structured C++ on
 top of the recompiled game.

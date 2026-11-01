@@ -275,7 +275,11 @@ uint8_t Machine::read_byte(offs_t addr)
 	if (addr < 0xc0)
 		return io_read(addr - 0x80);
 	if (addr >= 0x4000 && addr < 0x7000)
+	{
+		if (addr >= m_watch_first && addr < m_watch_last)
+			m_watch(addr, m_ram[addr - 0x4000], false);
 		return m_ram[addr - 0x4000];
+	}
 	if (addr >= 0x7000 && addr < 0x8000)
 		return m_sound_ram[addr - 0x7000];
 	if (addr >= 0x8000 && addr < 0xc000)
@@ -296,7 +300,11 @@ void Machine::write_byte(offs_t addr, uint8_t data)
 	else if (addr < 0xc0)
 		io_write(addr - 0x80, data);
 	else if (addr >= 0x4000 && addr < 0x7000)
+	{
 		m_ram[addr - 0x4000] = data;
+		if (addr >= m_watch_first && addr < m_watch_last)
+			m_watch(addr, data, true);
+	}
 	else if (addr >= 0x7000 && addr < 0x8000)
 		m_sound_ram[addr - 0x7000] = data;
 	else if (addr >= 0x8000 && addr < 0xc000)

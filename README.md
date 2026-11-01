@@ -91,9 +91,41 @@ build\recomp\Release\sonic-pocket.exe "path\to\cartridge.ngc"
 | Option | Enter | Start |
 | Quit | Esc | |
 
-Options: `--scale N` (window size, default 4), `--japanese`, and
+The game runs at its own rate (about 59.95 frames a second, with the scenery
+and sprites stepping every second frame) and each refresh of the monitor shows
+a picture drawn between the game's frames, so motion follows the monitor's
+refresh rate. Sound is kept in time by nudging the clock by a fraction of a
+percent.
+
+`--aspect original|16:10|16:9` picks the shape of the picture (`--widescreen`
+is 16:9); Tab or F10 cycles through them while playing and the last choice is
+remembered. In a level a wide view shows the level itself beyond the original
+screen's edges, read from the cartridge, with the HUD at the edges; every other
+screen (title, menus, special stages) is the original 160x152 centred with
+black bars. The game is told to keep the sprites and objects of the extra
+width (it normally drops anything off the 160-pixel screen), so a platform or
+an enemy is there as the wide picture reaches it. The zone's title card is
+centred over the level, which is already where it will be. Where the camera is
+locked at the end of an act 1 and in the boss arenas of the first two zones,
+the level is shown beyond the screen instead of black bars and the player may
+walk to the edges of the picture; the first zone's boss goes the whole width. The third zone's boss is as it was. Those are
+the things a wide view does to the game itself: objects wake up a little
+earlier, the player and the first boss get more room, and the longer sprite
+list can move the game's tick by a frame, so a recording made in one aspect plays
+back exactly only in that aspect.
+
+Options: `--scale N` (window size, default 4), `--japanese`,
+`--no-smoothing` (show only the game's own frames),
+`--fps N` (present N pictures a second by the clock instead of waiting for the
+monitor), `--stats` (print how evenly pictures were presented, and how evenly the
+game's clock stepped, when the window closes; `--quit-after SECONDS` closes it for you), and
 `--interpreter` to run the same game on the interpreter instead of the
-recompiled code. Save data is stored in the SDL preferences folder
+recompiled code. `--record input.txt` logs every frame's buttons from a fresh
+cartridge (the save file is untouched), `--replay input.txt` plays such a log
+back in the window, and F9 bookmarks the frame on screen;
+`ngpc-run --rom <cartridge> --input input.txt --bookmarks input.txt.bookmarks`
+then replays the session headlessly and writes a contact sheet of the real and
+in-between pictures around each bookmark. Save data is stored in the SDL preferences folder
 (`%APPDATA%\SonicPocket\SonicPocket\flash_save.bin` on Windows).
 
 ## Verifying

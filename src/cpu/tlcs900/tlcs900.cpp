@@ -11,6 +11,9 @@ included unmodified from upstream.
 *******************************************************************/
 
 #include "tlcs900.h"
+#include "instruction_hook.h"
+
+#include <vector>
 
 static constexpr u8 FLAG_CF = 0x01;
 static constexpr u8 FLAG_NF = 0x02;
@@ -150,6 +153,59 @@ void tlcs900_device::step_irq_phase()
 }
 
 
+namespace tlcs900_hook {
+
+namespace {
+
+constexpr uint32_t BASE = 0x200000;
+constexpr uint32_t SIZE = 0x200000;
+
+struct Entry
+{
+	uint32_t pc;
+	Function function;
+	void *context;
+};
+
+bool s_active = false;
+std::vector<uint8_t> s_bits;       // one bit per address
+std::vector<Entry> s_entries;
+
+} // namespace
+
+void add(uint32_t pc, Function function, void *context)
+{
+	if (pc < BASE || pc - BASE >= SIZE)
+		return;
+	if (s_bits.empty())
+		s_bits.assign(SIZE / 8, 0);
+	s_bits[(pc - BASE) >> 3] |= static_cast<uint8_t>(1 << (pc & 7));
+	s_entries.push_back({ pc, function, context });
+	s_active = true;
+}
+
+void clear()
+{
+	s_active = false;
+	s_bits.clear();
+	s_entries.clear();
+}
+
+} // namespace tlcs900_hook
+
+// Runs the hooks for the instruction about to execute at `pc`.
+static void run_hooks_at(tlcs900_device &cpu, offs_t pc)
+{
+	using namespace tlcs900_hook;
+	const uint32_t offset = pc - BASE;
+	if (offset >= SIZE || !((s_bits[offset >> 3] >> (pc & 7)) & 1))
+		return;
+	for (const Entry &entry : s_entries)
+		if (entry.pc == pc)
+			entry.function(cpu, entry.context);
+}
+
+
 void tlcs900_device::step_execute()
 {
 	const tlcs900inst *inst;
@@ -168,6 +224,8 @@ void tlcs900_device::step_execute()
 	else
 	{
 		debugger_instruction_hook( m_pc.d );
+		if ( tlcs900_hook::s_active )
+			run_hooks_at( *this, m_pc.d );
 
 		m_op = RDOP();
 		inst = &m_mnemonic[m_op];
@@ -208,7 +266,11 @@ bool tlcs900_device::recompiled_step_begin( offs_t pc )
 	m_pc.d = pc;
 	step_irq_phase();
 	if ( m_pc.d == pc && !m_halted )
+	{
+		if ( tlcs900_hook::s_active )
+			run_hooks_at( *this, pc );
 		return false;
+	}
 
 	/* An interrupt was accepted: the rest of this step executes at the
 	   vector, exactly like step() would. */

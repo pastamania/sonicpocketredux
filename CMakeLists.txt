@@ -20,7 +20,12 @@ target_include_directories(z80core PUBLIC third_party/z80)
 add_library(ngpc STATIC
     src/ngpc/ngpc_cpu.cpp
     src/ngpc/k2ge.cpp
+    src/ngpc/k2ge_render.cpp
+    src/ngpc/k2ge_interp.cpp
+    src/ngpc/level_map.cpp
     src/ngpc/machine.cpp
+    src/ngpc/sprite_trace.cpp
+    src/ngpc/wide_sprites.cpp
     src/ngpc/t6w28.cpp
     src/common/png.cpp
 )
