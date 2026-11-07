@@ -2,8 +2,18 @@
 // identical machines and checks that they stay in exact lockstep. After every
 // frame the CPU registers, cycle counter, work RAM, sound RAM, I/O registers
 // and video RAM must match.
+//
+//   spa-verify --rom <cart> [--frames N] [--out dir] [--input buttons.txt] [--drop-dash] [--option-screen]
+//
+// --input feeds both machines the same buttons (the format ngpc-run reads), to
+// check a stretch of play and not only the boot and title; --drop-dash switches
+// on the optional move (ngpc/drop_dash.h) in both, and --option-screen the host's rows on the
+// Game Option screen (ngpc/option_screen.h).
 
+#include "apps/input_log.h"
 #include "common/png.h"
+#include "ngpc/drop_dash.h"
+#include "ngpc/option_screen.h"
 #include "ngpc/machine.h"
 #include "recomp_rt/game.h"
 #include "recomp_rt/runtime.h"
@@ -14,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -63,12 +74,24 @@ int report_block(const char *what, uint32_t base, const uint8_t *a, const uint8_
 	return count;
 }
 
+// How a drop dash hook sends the CPU to the game's code: the recompiled game
+// unwinds to the runtime, the interpreted one takes the new program counter.
+void redirect_hook(tlcs900_device &cpu, uint32_t pc)
+{
+	if (rt::on_recompiled_game_thread())
+		rt::unwind(static_cast<Cpu *>(&cpu), pc);
+	ngpc::redirect_interpreted(cpu, pc);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
 {
 	fs::path rom_path;
 	fs::path out_dir = "out/spa-verify";
+	fs::path input_path;
+	bool drop_dash = false;
+	bool option_screen = false;
 	int frames = 600;
 	for (int i = 1; i < argc; ++i)
 	{
@@ -77,14 +100,24 @@ int main(int argc, char **argv)
 		if (arg == "--rom") rom_path = next();
 		else if (arg == "--frames") frames = std::stoi(next());
 		else if (arg == "--out") out_dir = next();
+		else if (arg == "--input") input_path = next();
+		else if (arg == "--drop-dash") drop_dash = true;
+		else if (arg == "--option-screen") option_screen = true;
 	}
 	if (rom_path.empty())
 	{
-		std::cerr << "usage: spa-verify --rom <cart> [--frames N] [--out dir]\n";
+		std::cerr << "usage: spa-verify --rom <cart> [--frames N] [--out dir] [--input buttons.txt] [--drop-dash] [--option-screen]\n";
 		return 2;
 	}
 
 	const std::vector<uint8_t> rom = read_file(rom_path);
+	const std::map<int, uint8_t> inputs = input_path.empty() ? std::map<int, uint8_t>{} : read_input_log(input_path);
+	if (drop_dash || option_screen)
+		ngpc::set_hook_redirect(redirect_hook);
+	if (drop_dash)
+		ngpc::set_drop_dash(true);
+	if (option_screen)
+		ngpc::set_option_screen(true);
 	ngpc::Machine interpreter;
 	ngpc::Machine recompiled;
 	for (ngpc::Machine *m : { &interpreter, &recompiled })
@@ -103,6 +136,11 @@ int main(int argc, char **argv)
 
 	for (int frame = 0; frame < frames; ++frame)
 	{
+		if (const auto it = inputs.find(frame); it != inputs.end())
+		{
+			interpreter.set_buttons(it->second);
+			recompiled.set_buttons(it->second);
+		}
 		auto t0 = std::chrono::steady_clock::now();
 		interpreter.run_frame();
 		auto t1 = std::chrono::steady_clock::now();

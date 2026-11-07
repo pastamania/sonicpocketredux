@@ -17,6 +17,15 @@
 // (k2ge_render.h), for the picture's vertical camera easing (see
 // Interpolator::ease_at): it uncovers that much above and below the screen.
 //
+// The last fight's hull (level 12) is drawn by the game's code one half at a time, the
+// half that is on the screen; the two tests that say which half is off it are given the
+// margin as well (see HULL_LEFT in the .cpp), so the half in the margin is drawn too.
+//
+// The cutscene that opens the last level has Robotnik run across the screen and ends him
+// 16 pixels beyond its right edge (0x39EBDE, see ACTOR_EXIT in the .cpp), which in a wide view
+// is in the middle of the picture: with a margin he runs to beyond its widest right edge,
+// which is twice the margin (at the start of a level the extra width is all on the right).
+//
 // The two flapping birds of the fifth zone's flight (level 8) have a test of their
 // own, which is widened the same way (see BIRD_WAKE in the .cpp), so they start
 // beyond the picture and fly in instead of appearing inside it.

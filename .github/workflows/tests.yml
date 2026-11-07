@@ -27,4 +27,23 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -A x64
       - name: Build
-        run: cmake --build build --config Release --target ngpc-run spa-recomp
+        run: cmake --build build --config Release --target ngpc-run spa-recomp cartridge-test
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  player:
+    # The program that is handed out: no cartridge in the build, so none of the game in the
+    # result. Built here so that it stays buildable; the files it needs must come out beside it.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build/player -A x64 -DSPA_PLAYER=ON
+      - name: Build
+        run: cmake --build build/player --config Release --target sonic-pocket
+      - name: Check the files to hand out
+        shell: bash
+        run: |
+          for f in sonic-pocket.exe SDL3.dll NOTICE.txt; do
+            test -f "build/player/Release/$f" || { echo "missing $f"; exit 1; }
+          done

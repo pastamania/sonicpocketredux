@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <cstdlib>
 
 namespace ngpc {
@@ -30,7 +31,7 @@ int mod(int a, int b)
 } // namespace
 
 
-LevelRam read_level_ram(Machine &machine)
+LevelRam read_level_ram(Machine &machine, bool finale_before)
 {
 	auto word = [&](uint32_t address) { return machine.read_byte(address) | (machine.read_byte(address + 1) << 8); };
 	LevelRam ram;
@@ -45,6 +46,7 @@ LevelRam read_level_ram(Machine &machine)
 	// The title card and the bosses are tasks of their own: walk the (circular)
 	// list.
 	uint32_t record = TASK_LIST_HEAD;
+	bool pod_hit = false, space_task = false;
 	for (int count = 0; count < 64 && record >= 0x4000 && record < 0x7000; count++)
 	{
 		const uint32_t function = machine.read_byte(record + TASK_FUNCTION) |
@@ -58,12 +60,35 @@ LevelRam read_level_ram(Machine &machine)
 		}
 		if (function >= ACT_CLEAR_FIRST && function < ACT_CLEAR_END)
 			ram.act_clear = true;
-		if (function >= BOSS_CODE_FIRST && function < BOSS_CODE_END && ram.boss_count < BOSS_TASKS)
-			ram.boss_x[ram.boss_count++] = static_cast<int16_t>(word(record + 0x12)) - ram.camera_x;
+		if ((function >= ENDING_FIRST && function < ENDING_END) ||
+				(function >= ENDING_SCENES_FIRST && function < ENDING_SCENES_END))
+			ram.ending = true;
+		if (function == LAST_BOSS_POD_HIT)
+			pod_hit = true;
+		if (function >= CHAOTIC_SPACE_FIRST && function < CHAOTIC_SPACE_END)
+			space_task = true;
+		if (ram.level == CHAOTIC_SPACE_LEVEL && ram.boss_count < BOSS_TASKS &&
+				std::find(std::begin(CHAOTIC_SPACE_MACHINE), std::end(CHAOTIC_SPACE_MACHINE), function) != std::end(CHAOTIC_SPACE_MACHINE))
+			ram.boss_x[ram.boss_count++] = static_cast<int16_t>(word(record + 0x12)) - static_cast<int16_t>(word(CHAOTIC_SPACE_PAN));
+		const bool boss_code = (function >= BOSS_CODE_FIRST && function < BOSS_CODE_END) ||
+				(function >= BOSS5_CODE_FIRST && function < BOSS5_CODE_END);
+		if (boss_code && ram.boss_count < BOSS_TASKS)
+		{
+			const int x = static_cast<int16_t>(word(record + 0x12)) - ram.camera_x;
+			if (std::abs(x) < BOSS_X_LIMIT)
+				ram.boss_x[ram.boss_count++] = x;
+		}
 		record = word(record + TASK_NEXT);
 		if (record == TASK_LIST_HEAD)
 			break;
 	}
+	// The finale lasts from the pod's hit through gaps with no task of its own (the
+	// controller ends, a fade runs, the ending starts), until the level is left or
+	// started again (the title card).
+	ram.space = ram.level == CHAOTIC_SPACE_LEVEL && (space_task || ram.title_card);
+	ram.finale = ram.level == FINAL_LEVEL && !ram.title_card && (pod_hit || finale_before);
+	if (ram.finale)
+		ram.ending = true;
 	return ram;
 }
 
@@ -88,7 +113,11 @@ bool wide_arena(const LevelRam &ram)
 {
 	// Locked: the camera may move less than a screen's width (the end of an
 	// act: none; the second zone's boss: 80 pixels).
-	return arena_level(ram) && ram.camera_x_end > 0 && ram.camera_x_end - ram.camera_x_start < 160;
+	// Chaotic Space keeps Super Sonic to the screen all the way through (once the card is gone),
+	// with no level around the picture, so the player gets the view's width there too.
+	if (ram.space)
+		return !ram.title_card && !ram.ending;
+	return arena_level(ram) && !ram.ending && ram.camera_x_end > 0 && ram.camera_x_end - ram.camera_x_start < 160;
 }
 
 
@@ -140,12 +169,153 @@ uint16_t LevelMap::scene_entry(const Header &header, int plane, int column, int 
 }
 
 
+void LevelMap::card_state(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_render::WideScene &scene)
+{
+	const k2ge_render::LineRegs &top = frame.line[0];
+	scene.centred = ram.title_card;
+	scene.card_owner_count = ram.card_owner_count;
+	for (int j = 0; j < ram.card_owner_count; j++)
+		scene.card_owner[j] = ram.card_owner[j];
+	if (!ram.title_card)
+		m_card_seen = false;
+	else if (!m_card_seen)
+	{
+		m_card_seen = true;
+		m_card_moved = false;
+		m_card_s1x = top.s1x;
+	}
+	else if (top.s1x != m_card_s1x)
+		m_card_moved = true;
+	scene.card_hold = ram.title_card && !m_card_moved;
+}
+
+
+bool LevelMap::build_space(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_render::WideScene &scene)
+{
+	// Nothing of a level's tiles is held for it, so nothing is left over for the next level.
+	m_header = 0;
+	m_row_offset = -1;
+	m_last_world_x = -1;
+	m_edits.clear();
+	for (RowTrack &track : m_rows)
+		track = RowTrack();
+
+	scene.active = true;
+	scene.ring = true;
+	scene.plane1 = false;
+	scene.arena = false;
+	scene.act_clear = false;
+	scene.p1_window = false;
+	scene.p1_rows = false;
+	// The machine's body is a block of plane 1's tiles that the game moves by scrolling the plane,
+	// as a boss's is in an arena: the ring is 256 pixels and a view up to 270, so the block, near an
+	// edge, would show again at the other (see p1_block_window). Not under the card, whose text is
+	// plane 1's too. The plane is scrolled as a whole.
+	bool uniform = true;
+	for (int line = 0; line < k2ge_render::LINES; line++)
+		if (frame.line[line].s1x != frame.line[0].s1x)
+			uniform = false;
+	if (ram.title_card || !uniform)
+		m_p1_known = false;
+	else
+		p1_block_window(frame, ram, scene, false);
+	// The camera's x is only a place to count the scroll from; the ring has no ends.
+	scene.world_x = ram.camera_x;
+	scene.level_width = 0;
+	scene.min_x = -(1 << 20);
+	scene.max_x = 1 << 20;
+	scene.first_col = 0;
+	card_state(frame, ram, scene);
+	m_agreement = 1.0;   // the picture is the hardware's own: there is nothing to disagree with
+	return true;
+}
+
+
+void LevelMap::p1_block_window(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_render::WideScene &scene,
+		bool follow_player)
+{
+	using namespace k2ge_render;
+	const LineRegs &top = frame.line[0];
+	bool occupied[32] = {};
+	int count = 0;
+	for (int column = 0; column < 32; column++)
+		for (int row = 0; row < 32 && !occupied[column]; row++)
+		{
+			const int at = 0x1000 + row * 64 + column * 2;
+			const int tile = frame.vram[at] | (frame.vram[at + 1] << 8);
+			if (tile != 0 && tile != BLANK)
+				occupied[column] = true;
+		}
+	for (bool o : occupied)
+		count += o;
+	// The block is what lies outside the longest empty run of columns.
+	int gap_start = -1, gap = 0;
+	for (int start = 0; start < 32 && count > 0 && count < 32; start++)
+	{
+		if (occupied[start] || !occupied[(start + 31) % 32])
+			continue;   // not the first column of an empty run
+		int run = 0;
+		while (!occupied[(start + run) % 32])
+			run++;
+		if (run > gap)
+		{
+			gap = run;
+			gap_start = start;
+		}
+	}
+	if (gap_start >= 0 && gap >= 4)   // a block, not a plane filled all round
+	{
+		const int first = (gap_start + gap) % 32, width = 32 - gap;
+		const int middle = (first * 8 + width * 4) & 255;    // in the ring
+		const int scroll = top.s1x;
+		int centre = mod(middle - scroll, 256);             // on screen, one lap of several
+		// The lap is the one a boss is in, if the game has one near the block;
+		// otherwise the one nearest to where the block was.
+		int best = 65;
+		int chosen = centre;
+		auto consider = [&](int anchor) {
+			const int lap = centre + 256 * static_cast<int>(std::lround((anchor - centre) / 256.0));
+			if (std::abs(lap - anchor) < best)
+			{
+				best = std::abs(lap - anchor);
+				chosen = lap;
+			}
+		};
+		for (int j = 0; j < ram.boss_count; j++)
+			consider(ram.boss_x[j]);
+		// The plane of the flight is where the player is (a few pixels to
+		// its left: its middle was 9 pixels left of the player's x).
+		if (follow_player)
+			consider(ram.player_x - 9);
+		if (best <= 64)
+			centre = chosen;
+		else
+		{
+			const int near = m_p1_known ? m_p1_centre : 80;
+			centre += 256 * static_cast<int>(std::lround((near - centre) / 256.0));
+		}
+		m_p1_centre = centre;
+		m_p1_known = true;
+		scene.p1_window = true;
+		scene.p1_lo = centre - 128;
+	}
+}
+
+
 bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_render::WideScene &scene)
 {
 	using namespace k2ge_render;
 
 	scene.active = false;
 	m_agreement = 0;
+	// The last boss's end, an ending or the credits: a picture made for the screen's
+	// 160 pixels, with nothing of the level to show beyond it (the level's tiles are
+	// still the last ones the level had to give). It is shown as every screen that is
+	// not a level is, centred between black bars.
+	if (ram.ending)
+		return false;
+	if (ram.space)
+		return build_space(frame, ram, scene);
 	Header header;
 	if (!parse(ram.header, header))
 		return false;
@@ -245,9 +415,13 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 	m_last_world_x = world_x;
 
 	scene.active = true;
+	scene.ring = false;
+	// Plane 1 scrolls with the level: with plane 2's scroll on the first line. (Not with plane 2's
+	// on every line: the game scrolls plane 2 away from the level for the lines of the pause
+	// banner, see LineRegs::band, and plane 1 stays.)
 	scene.plane1 = true;
 	for (int line = 0; line < LINES; line++)
-		if (frame.line[line].s1x != frame.line[line].s2x || frame.line[line].s1y != frame.line[line].s2y)
+		if (frame.line[line].s1x != top.s2x || frame.line[line].s1y != top.s2y)
 			scene.plane1 = false;
 	scene.world_x = world_x;
 	scene.level_width = level_width;
@@ -266,28 +440,15 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 	// The title card covers the level with a picture made for 160 pixels. The
 	// level is placed as it is without the card, so that nothing moves when the
 	// card goes; the card is held to its own 160 pixels until it starts to move.
-	scene.centred = ram.title_card;
-	scene.card_owner_count = ram.card_owner_count;
-	for (int j = 0; j < ram.card_owner_count; j++)
-		scene.card_owner[j] = ram.card_owner[j];
-	if (!ram.title_card)
-		m_card_seen = false;
-	else if (!m_card_seen)
-	{
-		m_card_seen = true;
-		m_card_moved = false;
-		m_card_s1x = top.s1x;
-	}
-	else if (top.s1x != m_card_s1x)
-		m_card_moved = true;
+	card_state(frame, ram, scene);
 	if (!ram.act_clear)
 		for (RowTrack &track : m_rows)
 			track = RowTrack();
-	scene.card_hold = ram.title_card && !m_card_moved;
 	// Where the camera is locked in an act's end or a boss arena, the level
 	// itself is shown beyond the screen (the camera's range would leave it black).
 	scene.arena = wide_arena(ram);
-	if (scene.arena)
+	scene.act_clear = ram.act_clear;
+	if (scene.arena || ram.act_clear)
 	{
 		scene.min_x = 0;
 		scene.max_x = level_width;
@@ -296,7 +457,7 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 	// would slide away from the level's end as the camera nears it and snap back
 	// when the camera locks: the level goes 64 pixels past the camera's last
 	// position, more than a wide view's side needs, so it is shown.
-	else if (arena_level(ram))
+	else if (arena_level(ram) || plane1_block_level(ram))
 		scene.max_x = level_width;
 
 	// In an arena the game moves a boss's body about as a block of plane 1's
@@ -313,7 +474,9 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 			uniform = false;
 	scene.p1_window = false;
 	scene.p1_rows = false;
-	const bool block_level = plane1_block_level(ram);
+	// (Not while the zone's title card is up: its text is plane 1's tiles too, and
+	// the card is shown as the game draws it, held to its own 160 pixels.)
+	const bool block_level = plane1_block_level(ram) && !ram.title_card;
 	if (!scene.arena && !block_level)
 		m_p1_known = false;
 	if (ram.act_clear && !scene.plane1)
@@ -410,71 +573,7 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 		}
 	}
 	else if ((scene.arena || block_level) && !scene.plane1 && uniform)
-	{
-		bool occupied[32] = {};
-		int count = 0;
-		for (int column = 0; column < 32; column++)
-			for (int row = 0; row < 32 && !occupied[column]; row++)
-			{
-				const int at = 0x1000 + row * 64 + column * 2;
-				const int tile = frame.vram[at] | (frame.vram[at + 1] << 8);
-				if (tile != 0 && tile != BLANK)
-					occupied[column] = true;
-			}
-		for (bool o : occupied)
-			count += o;
-		// The block is what lies outside the longest empty run of columns.
-		int gap_start = -1, gap = 0;
-		for (int start = 0; start < 32 && count > 0 && count < 32; start++)
-		{
-			if (occupied[start] || !occupied[(start + 31) % 32])
-				continue;   // not the first column of an empty run
-			int run = 0;
-			while (!occupied[(start + run) % 32])
-				run++;
-			if (run > gap)
-			{
-				gap = run;
-				gap_start = start;
-			}
-		}
-		if (gap_start >= 0 && gap >= 4)   // a block, not a plane filled all round
-		{
-			const int first = (gap_start + gap) % 32, width = 32 - gap;
-			const int middle = (first * 8 + width * 4) & 255;    // in the ring
-			const int scroll = top.s1x;
-			int centre = mod(middle - scroll, 256);             // on screen, one lap of several
-			// The lap is the one a boss is in, if the game has one near the block;
-			// otherwise the one nearest to where the block was.
-			int best = 65;
-			int chosen = centre;
-			auto consider = [&](int anchor) {
-				const int lap = centre + 256 * static_cast<int>(std::lround((anchor - centre) / 256.0));
-				if (std::abs(lap - anchor) < best)
-				{
-					best = std::abs(lap - anchor);
-					chosen = lap;
-				}
-			};
-			for (int j = 0; j < ram.boss_count; j++)
-				consider(ram.boss_x[j]);
-			// The plane of the flight is where the player is (a few pixels to
-			// its left: its middle was 9 pixels left of the player's x).
-			if (block_level)
-				consider(ram.player_x - 9);
-			if (best <= 64)
-				centre = chosen;
-			else
-			{
-				const int near = m_p1_known ? m_p1_centre : 80;
-				centre += 256 * static_cast<int>(std::lround((near - centre) / 256.0));
-			}
-			m_p1_centre = centre;
-			m_p1_known = true;
-			scene.p1_window = true;
-			scene.p1_lo = centre - 128;
-		}
-	}
+		p1_block_window(frame, ram, scene, block_level);
 	scene.first_col = first_column - WIDE_LEFT_COLS;
 	const int first_row = first_row_for(offset);
 	for (int ring_row = 0; ring_row < 32; ring_row++)
@@ -511,6 +610,13 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 		}
 	}
 
+	// What lies past the level's last column is that column again (see scene_entry)
+	// where the view is meant to be able to reach it: in an arena, in the fifth
+	// zone's flight (which ends on a platform with the camera stopped 64 pixels
+	// short of the data's end, so as to be as it is under the act clear) and under
+	// the act clear.
+	const bool extend = arena_level(ram) || plane1_block_level(ram) || ram.act_clear;
+
 	// The hardware map is what the game says is on screen, so it is kept for
 	// the tiles of the screen itself; everything beyond comes from the level
 	// data, as changed by the game.
@@ -524,8 +630,13 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 			for (int j = 0; j < WIDE_COLS; j++)
 			{
 				const int column = scene.first_col + j;
+				// (With the camera stopped at the end of the level's data, the screen's
+				// last, partly shown column can be past it: the game has nothing to draw
+				// there, and the view, centred, shows it: it takes the level's last column
+				// on, as what lies beyond does.)
+				const bool past_data = extend && m_last_column >= 0 && column / 4 > m_last_column;
 				const bool on_screen = from_top >= 0 && from_top < SCREEN_ROWS &&
-						column >= first_column && column < first_column + SCREEN_COLS;
+						column >= first_column && column < first_column + SCREEN_COLS && !past_data;
 				if (on_screen)
 				{
 					const int at = base + ring_row * 64 + (column & 31) * 2;
@@ -535,7 +646,7 @@ bool LevelMap::build(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_
 				{
 					const auto edited = m_edits.find(key(plane, column, row));
 					scene.entry[plane][ring_row][j] = edited != m_edits.end() ? edited->second
-							: scene_entry(header, plane == 1 ? 1 : 0, column, row, arena_level(ram));
+							: scene_entry(header, plane == 1 ? 1 : 0, column, row, extend);
 				}
 			}
 		}

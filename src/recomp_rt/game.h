@@ -29,4 +29,9 @@ private:
 	std::unique_ptr<Impl> m_impl;
 };
 
+// Whether the calling thread is a recompiled game's, that is whether the code
+// that is running is recompiled (and can be redirected with rt::unwind) and
+// not interpreted.
+bool on_recompiled_game_thread();
+
 } // namespace rt

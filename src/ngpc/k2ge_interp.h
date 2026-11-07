@@ -41,6 +41,10 @@ public:
 	// depends on it.
 	void set_view(const View &view) { m_view = view; }
 
+	// Whether pictures between the game's ticks place the level and the sprites to 1/SUBPIXELS
+	// of a pixel (the default) or to whole pixels, as the game does.
+	void set_subpixel(bool on) { m_subpixel = on; }
+
 	// Adds the frame the machine has just finished, with the game's account
 	// of its sprite table (SpriteTrace::match), or null if there is none, and
 	// the level's tile maps for a wide view (LevelMap::build), if there are
@@ -127,6 +131,7 @@ private:
 	std::vector<Object> m_objects;
 	std::vector<Object> m_lost;                    // dropped out of the list recently
 	int64_t m_ticks = 0;                           // game ticks seen
+	bool m_subpixel = true;
 	int m_camera_x = 0, m_camera_y = 0;            // the level plane's scroll, summed without wrapping
 	std::array<int8_t, SPRITES> m_slot_object{};   // object of each sprite slot, -1 for none
 	uint64_t m_serial = 0;                         // the sprite table the objects are from

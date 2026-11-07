@@ -1,11 +1,19 @@
 // sonic-pocket: plays the recompiled Sonic Pocket Adventure in an SDL3 window.
 //
-//   sonic-pocket <cartridge> [--interpreter] [--japanese] [--scale N]
-//                [--aspect original|16:10|16:9] [--fps N] [--no-smoothing]
+//   sonic-pocket [cartridge] [--interpreter] [--japanese] [--scale N]
+//                [--aspect original|16:10|16:9] [--refresh auto|60|90|120] [--fps N]
+//                [--no-smoothing] [--no-subpixel]
 //                [--scale-mode sharp|integer|nearest] [--frame-delay auto|off|MS]
-//                [--audio-latency FRAMES] [--window WxH]
+//                [--audio-latency FRAMES] [--window WxH] [--drop-dash | --no-drop-dash]
 //                [--record input.txt | --replay input.txt] [--stats]
 //                [--screenshot file.png [--screenshot-at FRAME]]
+//
+// The cartridge is the .ngc file of the World release (or a zip archive that holds it), and
+// only that release will run: it is told by its size and CRC-32 (config/rom.json). If none is
+// named it is looked for beside the program (and in the folder the program was started from) as
+// "Sonic The Hedgehog - Pocket Adventure (World) (En,Ja).ngc" and as a zip of that name; failing
+// that, where it was last found (the `rom` line of the settings file); failing that, a file
+// dialog asks for it, and where it is chosen from is remembered. See common/cartridge.h.
 //
 // The game runs at its own rate (about 59.95 frames a second, with the
 // scenery and sprites stepping every second frame) and every refresh of the
@@ -13,6 +21,12 @@
 // at whatever rate the monitor runs. --no-smoothing shows the game's own
 // frames instead. --fps N presents N pictures a second by the clock instead of
 // waiting for the monitor. --stats prints how evenly pictures were presented.
+// --refresh auto|60|90|120 picks how many pictures a second to show (F6 steps through 60, 90 and
+// 120 and the choice is remembered; the default is 60): auto is one for every refresh of the
+// display, and a number shows that many by repeating a picture on the refreshes in between (60
+// on a 120 Hz display: every second one). It suits a display that runs at that rate or a multiple
+// of it. Pictures between the game's steps
+// place the level and the sprites to a quarter of a pixel; --no-subpixel uses whole pixels.
 // --record writes every frame's buttons to a file in the format
 // `ngpc-run --input` reads, starting from a fresh cartridge (the save file is
 // neither read nor written), and F9 marks the frame on screen in
@@ -20,8 +34,8 @@
 // session exactly, so a glitch can be examined from its bookmark. --replay
 // plays such a file back in the window instead of reading the keyboard (also
 // from a fresh cartridge), to see a recorded session in any aspect.
-// --aspect picks the shape of the picture: the machine's own 160x152, or a
-// 16:10 or 16:9 window (--widescreen is 16:9). Tab or F10 cycles through them
+// --aspect picks the shape of the picture: a 16:9 window (the default, --widescreen), a 16:10
+// one, or the machine's own 160x152. Tab or F10 cycles through them
 // while playing, and the last choice is remembered in the preferences folder.
 // Screens the game draws for the machine's own 160x152 are centred with black
 // bars.
@@ -30,9 +44,13 @@
 // choice is remembered): `sharp` fills the window with even, crisp pixels at
 // any size (SDL's pixel-art scaling), `integer` uses whole multiples only, with
 // bars, and `nearest` is plain nearest-neighbour scaling (whole multiples for
-// the original screen, any size for a wide one: uneven pixels). F11 or
-// Alt+Enter toggles borderless fullscreen. The window is made with a high pixel
-// density, so on a display that has one the picture is drawn in its own pixels.
+// the original screen, any size for a wide one: uneven pixels). The game opens in
+// borderless fullscreen; F11 or Alt+Enter (on Windows, macOS and Linux alike) switches
+// between that and a window, and --windowed opens in a window instead (so do --window
+// and --screenshot, which ask for a window of a given size; --fullscreen overrides
+// them). The choice is not remembered: it opens in fullscreen each time. The window is
+// made with a high pixel density, so on a display that has one the picture is drawn in
+// its own pixels.
 //
 // Latency (see --stats for the numbers). The sound is kept `--audio-latency`
 // frames deep (default 2; it is raised by itself if the device runs dry). With
@@ -44,24 +62,49 @@
 // display there is too little to gain for the risk of a missed refresh. `off`
 // never waits; a number waits that many milliseconds every frame.
 //
+// --drop-dash gives Sonic the drop dash of Sonic Mania (see ngpc/drop_dash.h;
+// F7 switches it on and off while playing and the choice is remembered). It is
+// not in the game and is off unless asked for: jump, press a jump button again in
+// the air and keep it held, and landing with it still held starts a roll at once,
+// faster than he came in. A recording made with it on replays exactly only with it on.
+//
+// The drop dash, the picture rate and the picture's shape are also rows of the game's own Game
+// Option screen (title menu, Go To Room, Game Option), in place of its Auto Power Off and Exit
+// (B leaves): see ngpc/option_screen.h. A change there is applied and remembered as the hotkeys
+// do, and the hotkeys change the rows. A recording made while using that screen replays exactly
+// only with `ngpc-run --option-screen`.
+//
 // Controls: arrow keys or D-pad/left stick, Z / gamepad south = A,
 // X / gamepad east = B, Enter / gamepad start = Option, Escape quits.
 //
 // The game's save data lives in the cartridge's flash chip (the last 32 KiB of
 // the ROM); it is written to the SDL preferences folder whenever it changes.
+//
+// Two builds of this program exist (see CMakeLists.txt). Built with SPA_ROM it holds the game
+// recompiled to C++ from that cartridge, and --interpreter runs the interpreter instead. Built
+// without (SPA_PLAYER), which is the one to hand out, it holds no part of the game: the cartridge
+// is read when the program starts and the interpreter always runs it, --interpreter being
+// accepted and doing nothing. SPA_RECOMPILED is defined for the first.
 
+#include "common/cartridge.h"
 #include "common/png.h"
+#include "ngpc/drop_dash.h"
+#include "ngpc/option_screen.h"
 #include "ngpc/k2ge_interp.h"
 #include "ngpc/level_map.h"
 #include "ngpc/machine.h"
 #include "ngpc/sprite_trace.h"
 #include "ngpc/wide_levels.h"
 #include "ngpc/wide_sprites.h"
+#ifdef SPA_RECOMPILED
 #include "recomp_rt/game.h"
+#include "recomp_rt/runtime.h"
+#endif
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -172,6 +215,46 @@ ScaleMode next_scale_mode(ScaleMode mode)
 	return mode == ScaleMode::Sharp ? ScaleMode::Integer : mode == ScaleMode::Integer ? ScaleMode::Nearest : ScaleMode::Sharp;
 }
 
+// How many pictures a second to show: 0 is one for every refresh of the display, or 60, 90
+// or 120. The game makes pictures between its own frames, so this is the smoothness the
+// player asks for: 60 is a picture on every game frame, 120 four for every two of the
+// game's ticks. A display that runs faster shows a picture again until the next is due.
+constexpr int REFRESH_RATES[] = { 60, 90, 120 };
+
+bool parse_refresh(const std::string &text, int &rate)
+{
+	if (text == "auto")
+	{
+		rate = 0;
+		return true;
+	}
+	for (int candidate : REFRESH_RATES)
+		if (text == std::to_string(candidate))
+		{
+			rate = candidate;
+			return true;
+		}
+	return false;
+}
+
+std::string refresh_name(int rate)
+{
+	return rate == 0 ? "auto" : std::to_string(rate);
+}
+
+// F6 and the Game Option screen step through 60, 90 and 120; `auto` (0) is only for the command
+// line and an old settings file, and goes to 60.
+int next_refresh(int rate)
+{
+	return rate == REFRESH_RATES[0] ? REFRESH_RATES[1] : rate == REFRESH_RATES[1] ? REFRESH_RATES[2] : REFRESH_RATES[0];
+}
+
+// What the Game Option screen shows for a rate: `auto` shows as 60.
+int menu_refresh(int rate)
+{
+	return rate == 0 ? REFRESH_RATES[0] : rate;
+}
+
 // "auto" is -1, "off" 0, a number of milliseconds to wait every frame.
 bool parse_frame_delay(const std::string &text, double &milliseconds)
 {
@@ -223,10 +306,13 @@ fs::path settings_path()
 // audio latency are only read (edit the file, or give the options for one run).
 struct Settings
 {
-	k2ge_render::Aspect aspect = k2ge_render::Aspect::Original;
+	k2ge_render::Aspect aspect = k2ge_render::Aspect::Wide16x9;
 	ScaleMode scale_mode = ScaleMode::Sharp;
 	double frame_delay = -1;                      // see parse_frame_delay
 	int audio_latency = AUDIO_LATENCY_DEFAULT;    // frames
+	bool drop_dash = false;
+	int refresh = 60;                             // see parse_refresh
+	fs::path rom;                                 // where the cartridge was last found
 };
 
 Settings load_settings()
@@ -247,6 +333,12 @@ Settings load_settings()
 			parse_frame_delay(value, settings.frame_delay);
 		else if (key == "audio-latency")
 			settings.audio_latency = std::clamp(std::atoi(value.c_str()), 1, AUDIO_LATENCY_MAX);
+		else if (key == "drop-dash")
+			settings.drop_dash = value == "1" || value == "on";
+		else if (key == "refresh")
+			parse_refresh(value, settings.refresh);
+		else if (key == "rom")
+			settings.rom = cartridge::from_utf8(value.substr(0, value.find_last_not_of('\r') + 1));
 	}
 	return settings;
 }
@@ -263,12 +355,226 @@ void save_settings(const Settings &settings)
 	else
 		file << "frame-delay=" << settings.frame_delay << "\n";
 	file << "audio-latency=" << settings.audio_latency << "\n";
+	file << "drop-dash=" << (settings.drop_dash ? "on" : "off") << "\n";
+	file << "refresh=" << refresh_name(settings.refresh) << "\n";
+	if (!settings.rom.empty())
+		file << "rom=" << cartridge::to_utf8(settings.rom) << "\n";
 }
 
-uint8_t read_buttons(const bool *keys, SDL_Gamepad *pad)
+// What the file dialog hands back. The callback may run on another thread, and may run after
+// the wait for it has been given up, so it holds a share of this itself.
+struct FileChoice
+{
+	std::atomic<bool> done{ false };
+	std::string path;    // UTF-8; empty if the dialog was cancelled
+	std::string error;   // why no dialog could be shown
+};
+
+void SDLCALL file_chosen(void *userdata, const char *const *files, int)
+{
+	auto *share = static_cast<std::shared_ptr<FileChoice> *>(userdata);
+	FileChoice &choice = **share;
+	if (!files)
+		choice.error = SDL_GetError();
+	else if (*files)
+		choice.path = *files;
+	choice.done = true;
+	delete share;
+}
+
+// Asks for the cartridge with the system's file dialog, starting in `folder` (if it is not empty).
+// Returns the file chosen, or an empty path if the dialog was cancelled or could not be shown (in
+// which case `error` says why).
+fs::path ask_for_cartridge(const fs::path &folder, std::string &error)
+{
+	static const SDL_DialogFileFilter filters[] = {
+		{ "Cartridge image or zip archive", "ngc;ngp;npc;bin;zip" },
+		{ "All files", "*" },
+	};
+	const std::string location = cartridge::to_utf8(folder);
+	const std::string title = std::string("Select ") + cartridge::FILE_NAME + " (or the zip that holds it)";
+	const SDL_PropertiesID properties = SDL_CreateProperties();
+	SDL_SetPointerProperty(properties, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, const_cast<SDL_DialogFileFilter *>(filters));
+	SDL_SetNumberProperty(properties, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, 2);
+	SDL_SetStringProperty(properties, SDL_PROP_FILE_DIALOG_TITLE_STRING, title.c_str());
+	if (!location.empty())
+		SDL_SetStringProperty(properties, SDL_PROP_FILE_DIALOG_LOCATION_STRING, location.c_str());
+
+	auto choice = std::make_shared<FileChoice>();
+	SDL_ShowFileDialogWithProperties(SDL_FILEDIALOG_OPENFILE, file_chosen, new std::shared_ptr<FileChoice>(choice), properties);
+	// The dialog is answered through events on some systems (macOS), so keep them running.
+	while (!choice->done)
+	{
+		SDL_PumpEvents();
+		SDL_Delay(20);
+	}
+	SDL_DestroyProperties(properties);
+	SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+	error = choice->error;
+	return choice->path.empty() ? fs::path() : cartridge::from_utf8(choice->path);
+}
+
+// Tells the player what is wrong with the cartridge. With `retry` they may choose another file:
+// returns true if they want to.
+bool show_cartridge_problem(const std::string &text, bool retry)
+{
+	std::fprintf(stderr, "%s\n", text.c_str());
+	const SDL_MessageBoxButtonData choose_or_quit[] = {
+		{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Choose another file" },
+		{ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit" },
+	};
+	const SDL_MessageBoxButtonData quit[] = {
+		{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit" },
+	};
+	SDL_MessageBoxData box = {};
+	box.flags = SDL_MESSAGEBOX_ERROR;
+	box.title = "Sonic Pocket";
+	box.message = text.c_str();
+	box.numbuttons = retry ? 2 : 1;
+	box.buttons = retry ? choose_or_quit : quit;
+	int button = 0;
+	return SDL_ShowMessageBox(&box, &button) && button == 1;
+}
+
+// Finds the cartridge when none was named on the command line, and remembers where it is.
+// First the folder of the program and the one it was started from are searched for the file
+// by its name and for the zip archive of that name; then the place it was last found; and
+// failing those the player is asked to choose it. Only a file with the right checksum counts,
+// and one that does not is explained. Returns false if there is none (the player has been told).
+bool find_cartridge(Settings &stored, std::vector<uint8_t> &rom, fs::path &path)
+{
+	std::vector<fs::path> folders;
+	if (const char *base = SDL_GetBasePath())
+		folders.push_back(cartridge::from_utf8(base));
+	std::error_code error;
+	const fs::path current = fs::current_path(error);
+	if (!error && (folders.empty() || !fs::equivalent(current, folders[0], error)))
+		folders.push_back(current);
+
+	std::string problem;
+	path = cartridge::find(folders, rom, problem);
+	if (path.empty() && !stored.rom.empty())
+	{
+		std::string why;
+		const cartridge::Status status = cartridge::read(stored.rom, rom, why);
+		if (status == cartridge::Status::Ok)
+			path = stored.rom;
+		else if (status == cartridge::Status::Wrong)
+			problem += (problem.empty() ? "" : "\n") + why;
+	}
+
+	if (path.empty())
+	{
+		fs::path start = stored.rom.parent_path();   // empty the first time: the system chooses
+		std::string notice = problem;
+		for (;;)
+		{
+			if (!notice.empty() && !show_cartridge_problem(notice + "\n\nChoose the right file.", true))
+				return false;
+			std::string dialog_error;
+			const fs::path chosen = ask_for_cartridge(start, dialog_error);
+			if (chosen.empty())
+			{
+				if (!dialog_error.empty())
+					show_cartridge_problem("Sonic Pocket needs a copy of the cartridge and could not ask for it (" + dialog_error +
+							").\n\nPut \"" + cartridge::FILE_NAME + "\" (or the zip that holds it) in the same folder as the "
+							"program, or give its path on the command line.", false);
+				else
+					std::fprintf(stderr, "no cartridge was chosen\n");
+				return false;
+			}
+			std::string why;
+			if (cartridge::read(chosen, rom, why) == cartridge::Status::Ok)
+			{
+				path = chosen;
+				break;
+			}
+			notice = why;
+			start = chosen.parent_path();
+		}
+	}
+
+	if (path != stored.rom)
+	{
+		stored.rom = path;
+		save_settings(stored);
+	}
+	return true;
+}
+
+// How a hook of the drop dash sends the CPU to a routine of the game. Recompiled
+// code ignores a change to the program counter, so it unwinds to the runtime,
+// which carries on from there; the interpreter just takes the new counter.
+void redirect_hook(tlcs900_device &cpu, uint32_t pc)
+{
+#ifdef SPA_RECOMPILED
+	if (rt::on_recompiled_game_thread())
+		rt::unwind(static_cast<Cpu *>(&cpu), pc);
+#endif
+	ngpc::redirect_interpreted(cpu, pc);
+}
+
+// Alt+Enter (either Enter key) or F11: the keys that switch between fullscreen and a
+// window. The modifier is taken from the event and from the keyboard as it is now, so
+// the shortcut works however the system reports Alt (on Windows it arrives as a "system
+// key" message).
+bool is_fullscreen_key(const SDL_KeyboardEvent &key)
+{
+	if (key.scancode == SDL_SCANCODE_F11)
+		return true;
+	return (key.scancode == SDL_SCANCODE_RETURN || key.scancode == SDL_SCANCODE_KP_ENTER) &&
+			((key.mod | SDL_GetModState()) & SDL_KMOD_ALT);
+}
+
+SDL_Gamepad *open_gamepad(SDL_JoystickID id)
+{
+	SDL_Gamepad *pad = SDL_OpenGamepad(id);
+	if (pad)
+		std::printf("gamepad: %s\n", SDL_GetGamepadName(pad));
+	else
+		std::fprintf(stderr, "cannot open gamepad: %s\n", SDL_GetError());
+	return pad;
+}
+
+// The first connected gamepad other than `except` (the one just unplugged, which
+// SDL may still list), or none. Used to carry on with a second pad.
+SDL_Gamepad *open_other_gamepad(SDL_JoystickID except)
+{
+	int count = 0;
+	SDL_JoystickID *ids = SDL_GetGamepads(&count);
+	SDL_Gamepad *pad = nullptr;
+	for (int i = 0; i < count && !pad; ++i)
+		if (ids[i] != except)
+			pad = open_gamepad(ids[i]);
+	SDL_free(ids);
+	return pad;
+}
+
+// A pad that SDL has no built-in mapping for is ignored until it is given one. Besides the
+// SDL_GAMECONTROLLERCONFIG environment variable (which SDL reads itself), read any
+// gamecontrollerdb.txt next to the executable or in the preferences folder.
+void load_gamepad_mappings()
+{
+	auto load = [](const fs::path &file) {
+		std::error_code ignored;
+		if (!fs::is_regular_file(file, ignored))
+			return;
+		const int added = SDL_AddGamepadMappingsFromFile(file.string().c_str());
+		if (added < 0)
+			std::fprintf(stderr, "cannot read %s: %s\n", file.string().c_str(), SDL_GetError());
+		else
+			std::printf("gamepad mappings: %d from %s\n", added, file.string().c_str());
+	};
+	if (const char *base = SDL_GetBasePath())
+		load(fs::path(base) / "gamecontrollerdb.txt");
+	load(save_path().replace_filename("gamecontrollerdb.txt"));
+}
+
+// `enter_is_fullscreen`: the Enter key is down because of an Alt+Enter, which switched the
+// screen mode and is not the Option button, even if Alt is let go of before Enter is.
+uint8_t read_buttons(const bool *keys, SDL_Gamepad *pad, bool enter_is_fullscreen)
 {
 	uint8_t buttons = 0;
-	// Alt+Enter is the fullscreen key, not the Option button.
 	const bool alt = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
 	auto pressed = [&](SDL_Scancode key, SDL_GamepadButton button) {
 		return keys[key] || (pad && SDL_GetGamepadButton(pad, button));
@@ -279,7 +585,8 @@ uint8_t read_buttons(const bool *keys, SDL_Gamepad *pad)
 	if (pressed(SDL_SCANCODE_RIGHT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) buttons |= ngpc::BUTTON_RIGHT;
 	if (pressed(SDL_SCANCODE_Z, SDL_GAMEPAD_BUTTON_SOUTH)) buttons |= ngpc::BUTTON_A;
 	if (pressed(SDL_SCANCODE_X, SDL_GAMEPAD_BUTTON_EAST)) buttons |= ngpc::BUTTON_B;
-	if ((keys[SDL_SCANCODE_RETURN] && !alt) || (pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START)))
+	if ((keys[SDL_SCANCODE_RETURN] && !alt && !enter_is_fullscreen) ||
+			(pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START)))
 		buttons |= ngpc::BUTTON_OPTION;
 	if (pad)
 	{
@@ -304,13 +611,21 @@ int main(int argc, char **argv)
 	int scale = 4;
 	int fps = 0;             // 0: one picture per refresh of the monitor
 	bool smoothing = true;
+	bool subpixel = true;    // --no-subpixel: pictures between the game's ticks at whole pixels
 	// What was chosen last time, which the options below override for this run.
 	Settings stored = load_settings();
 	k2ge_render::Aspect aspect = stored.aspect;
 	ScaleMode scale_mode = stored.scale_mode;
 	double frame_delay = stored.frame_delay;
 	int audio_latency = stored.audio_latency;
+	bool drop_dash = stored.drop_dash;
+	int refresh = stored.refresh;   // pictures a second to show, 0: every refresh of the display
 	int window_width = 0, window_height = 0;   // 0: from --scale
+	// Fullscreen on opening: --fullscreen / --windowed say which (-1: neither was given, so
+	// fullscreen unless --window or --screenshot asked for a window of a known size).
+	int screen_choice = -1;
+	bool windowed_by_option = false;
+	bool enter_is_fullscreen = false;   // Enter is down as part of Alt+Enter (see read_buttons)
 	fs::path record_path, replay_path;
 	fs::path screenshot_path;
 	uint64_t screenshot_at = 600;              // game frame
@@ -324,6 +639,7 @@ int main(int argc, char **argv)
 		else if (arg == "--scale" && i + 1 < argc) scale = std::max(1, std::stoi(argv[++i]));
 		else if (arg == "--fps" && i + 1 < argc) fps = std::max(30, std::stoi(argv[++i]));
 		else if (arg == "--no-smoothing") smoothing = false;
+		else if (arg == "--no-subpixel") subpixel = false;
 		else if (arg == "--aspect" && i + 1 < argc)
 		{
 			if (!k2ge_render::parse_aspect(argv[++i], aspect))
@@ -352,6 +668,18 @@ int main(int argc, char **argv)
 		}
 		else if (arg == "--audio-latency" && i + 1 < argc)
 			audio_latency = std::clamp(std::atoi(argv[++i]), 1, AUDIO_LATENCY_MAX);
+		else if (arg == "--refresh" && i + 1 < argc)
+		{
+			if (!parse_refresh(argv[++i], refresh))
+			{
+				std::fprintf(stderr, "unknown refresh rate %s (auto, 60, 90 or 120)\n", argv[i]);
+				return 2;
+			}
+		}
+		else if (arg == "--drop-dash") drop_dash = true;
+		else if (arg == "--no-drop-dash") drop_dash = false;
+		else if (arg == "--windowed") screen_choice = 0;
+		else if (arg == "--fullscreen") screen_choice = 1;
 		else if (arg == "--window" && i + 1 < argc)
 		{
 			if (std::sscanf(argv[++i], "%dx%d", &window_width, &window_height) != 2 || window_width < 160 || window_height < 152)
@@ -359,24 +687,33 @@ int main(int argc, char **argv)
 				std::fprintf(stderr, "bad window size %s (WIDTHxHEIGHT)\n", argv[i]);
 				return 2;
 			}
+			windowed_by_option = true;
 		}
-		else if (arg == "--screenshot" && i + 1 < argc) screenshot_path = argv[++i];
+		else if (arg == "--screenshot" && i + 1 < argc)
+		{
+			screenshot_path = argv[++i];
+			windowed_by_option = true;
+		}
 		else if (arg == "--screenshot-at" && i + 1 < argc) screenshot_at = std::stoull(argv[++i]);
 		else if (arg == "--record" && i + 1 < argc) record_path = argv[++i];
 		else if (arg == "--replay" && i + 1 < argc) replay_path = argv[++i];
 		else if (arg == "--stats") stats = true;
+		else if (arg == "--help" || arg == "-h")
+		{
+			std::printf("usage: sonic-pocket [cartridge] [--interpreter] [--japanese] [--scale N]\n"
+					"                    [--aspect original|16:10|16:9] [--refresh auto|60|90|120] [--fps N]\n"
+					"                    [--no-smoothing] [--no-subpixel]\n"
+					"                    [--scale-mode sharp|integer|nearest] [--frame-delay auto|off|MS]\n"
+					"                    [--audio-latency FRAMES] [--drop-dash | --no-drop-dash]\n"
+					"                    [--fullscreen | --windowed] [--window WxH]\n"
+					"                    [--record input.txt | --replay input.txt] [--stats]\n"
+					"                    [--screenshot file.png [--screenshot-at FRAME]]\n"
+					"\nWithout a cartridge (the .ngc file or a zip archive of it), it is looked for beside the\n"
+					"program, where it was last found, and then asked for.\n");
+			return 0;
+		}
 		else if (arg == "--quit-after" && i + 1 < argc) quit_after = std::stod(argv[++i]);
 		else rom_path = arg;
-	}
-	if (rom_path.empty())
-	{
-		std::fprintf(stderr, "usage: sonic-pocket <cartridge> [--interpreter] [--japanese] [--scale N]\n"
-				"                    [--aspect original|16:10|16:9] [--fps N] [--no-smoothing]\n"
-				"                    [--scale-mode sharp|integer|nearest] [--frame-delay auto|off|MS]\n"
-				"                    [--audio-latency FRAMES] [--window WxH]\n"
-				"                    [--record input.txt | --replay input.txt] [--stats]\n"
-				"                    [--screenshot file.png [--screenshot-at FRAME]]\n");
-		return 2;
 	}
 
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD))
@@ -384,8 +721,23 @@ int main(int argc, char **argv)
 		std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
 		return 1;
 	}
+	load_gamepad_mappings();
 
-	std::vector<uint8_t> rom = read_file(rom_path);
+	// The cartridge: the one named, or else one found (or asked for) and remembered. Only the
+	// release the game is built from will do.
+	std::vector<uint8_t> rom;
+	if (!rom_path.empty())
+	{
+		std::string problem;
+		if (cartridge::read(rom_path, rom, problem) != cartridge::Status::Ok)
+		{
+			std::fprintf(stderr, "%s\n", problem.c_str());
+			return 1;
+		}
+	}
+	else if (!find_cartridge(stored, rom, rom_path))
+		return 1;
+	std::printf("cartridge: %s\n", cartridge::to_utf8(rom_path).c_str());
 	const fs::path save_file = save_path();
 	const bool recording = !record_path.empty();
 	// A recording or its replay starts from a fresh cartridge: the save file
@@ -401,7 +753,7 @@ int main(int argc, char **argv)
 	auto machine = std::make_unique<ngpc::Machine>();
 	if (const std::string error = machine->load_cartridge(rom); !error.empty())
 	{
-		std::fprintf(stderr, "cannot load %s: %s\n", rom_path.string().c_str(), error.c_str());
+		std::fprintf(stderr, "cannot load %s: %s\n", cartridge::to_utf8(rom_path).c_str(), error.c_str());
 		return 1;
 	}
 	machine->boot(language);
@@ -449,27 +801,54 @@ int main(int argc, char **argv)
 		bookmarks.open(record_path.string() + ".bookmarks");
 		if (language != 1)
 			std::fprintf(stderr, "note: a recording made with --japanese replays in English\n");
+		if (drop_dash)
+			std::fprintf(stderr, "note: a recording made with the drop dash replays exactly only with --drop-dash\n");
 	}
 
+	// The optional drop dash (hooks on the player's code; nothing is installed
+	// until it is switched on).
+	ngpc::set_hook_redirect(redirect_hook);
+	ngpc::set_drop_dash(drop_dash);
+	// The rows for the drop dash, the picture rate and the picture shape on the game's own Game
+	// Option screen (hooks on that screen's code; the game's save is not touched by them).
+	ngpc::set_option_screen(true);
+	auto publish_options = [&]() {
+		ngpc::HostOptions options;
+		options.drop_dash = drop_dash;
+		options.refresh = menu_refresh(refresh);
+		options.aspect = aspect;
+		ngpc::set_host_options(options);
+	};
+	publish_options();
+
+#ifdef SPA_RECOMPILED
 	std::unique_ptr<rt::RecompiledGame> game;
 	if (!use_interpreter)
 		game = std::make_unique<rt::RecompiledGame>(*machine);
+#else
+	(void)use_interpreter;   // the interpreter is all there is
+#endif
 
 	// The shape of the picture. A wide one is scaled to fit the window; the
 	// stock one only by whole numbers.
 	k2ge_render::View view = k2ge_render::aspect_view(aspect);
 	k2ge_render::Interpolator interpolator(view);
+	interpolator.set_subpixel(subpixel);
 	ngpc::SpriteTrace sprite_trace(*machine);
 	ngpc::LevelMap level_map(machine->cartridge());
+	bool finale = false;   // the last fight's pod has been hit (LevelRam::finale)
 	auto wide_scene = std::make_unique<k2ge_render::WideScene>();
 	std::vector<uint32_t> picture;
 
 	// A high pixel density window is drawn in the display's own pixels; without
 	// it a display that has more pixels than points scales the picture up itself,
 	// and softens the edges of every pixel.
+	// It opens fullscreen (borderless, at the desktop's size); the size given here is the
+	// window's when Alt+Enter or F11 takes it out of fullscreen.
+	const bool fullscreen = screen_choice >= 0 ? screen_choice == 1 : !windowed_by_option;
 	SDL_Window *window = SDL_CreateWindow("Sonic Pocket Adventure",
 			window_width ? window_width : view.width * scale, window_height ? window_height : k2ge::SCREEN_HEIGHT * scale,
-			SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+			SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
 	SDL_Renderer *renderer = window ? SDL_CreateRenderer(window, nullptr) : nullptr;
 	if (!renderer)
 	{
@@ -504,9 +883,24 @@ int main(int argc, char **argv)
 			SDL_SetTextureScaleMode(texture, filter);
 	};
 
+	// Gives the window the shape of the picture, keeping its height. A fullscreen or
+	// maximized window keeps its size, so that is left until it is a plain window again.
+	bool window_shape_stale = false;
+	auto reshape_window = [&]() {
+		if (SDL_GetWindowFlags(window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED))
+		{
+			window_shape_stale = true;
+			return;
+		}
+		window_shape_stale = false;
+		int w = 0, h = 0;
+		SDL_GetWindowSize(window, &w, &h);
+		SDL_SetWindowSize(window, (h * view.width + k2ge::SCREEN_HEIGHT / 2) / k2ge::SCREEN_HEIGHT, h);
+	};
+
 	// Sets up everything that depends on the shape of the picture. Switching
 	// while playing also reshapes the window.
-	auto apply_aspect = [&](bool reshape_window) {
+	auto apply_aspect = [&](bool reshape) {
 		view = k2ge_render::aspect_view(aspect);
 		interpolator.set_view(view);
 		ngpc::set_wide_sprite_margin((view.width - 160 + 1) / 2);
@@ -521,12 +915,8 @@ int main(int argc, char **argv)
 		const std::string title = std::string("Sonic Pocket Adventure") +
 				(aspect == k2ge_render::Aspect::Original ? "" : std::string(" (") + k2ge_render::aspect_name(aspect) + ")");
 		SDL_SetWindowTitle(window, title.c_str());
-		if (reshape_window && !(SDL_GetWindowFlags(window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED)))
-		{
-			int w = 0, h = 0;
-			SDL_GetWindowSize(window, &w, &h);
-			SDL_SetWindowSize(window, (h * view.width + k2ge::SCREEN_HEIGHT / 2) / k2ge::SCREEN_HEIGHT, h);
-		}
+		if (reshape)
+			reshape_window();
 	};
 	apply_aspect(false);
 
@@ -574,9 +964,31 @@ int main(int argc, char **argv)
 	// period (measured, and steered gently back to real time) rather than by
 	// the jittery time between calls.
 	double period = 1e9 / 60;
+	// --refresh: each refresh of the display earns R * period pictures, and one is made when a
+	// whole one has built up (60 on a 120 Hz display: every second refresh; 90: three in four);
+	// the others show the last picture again.
+	double picture_credit = 1;
+	uint64_t pictures_made = 0, presents = 0;   // for --stats
+	auto report_refresh = [&]() {
+		const double display = 1e9 / period;
+		if (!vsync)
+			std::printf("refresh %s: not used, pictures are paced by the clock (--fps)\n", refresh_name(refresh).c_str());
+		else if (refresh == 0)
+			std::printf("refresh: auto, a picture for every refresh of the %.0f Hz display\n", display);
+		else if (refresh >= display * 0.97)
+			std::printf("refresh: %d, a picture for every refresh of the %.0f Hz display\n", refresh, display);
+		else if (std::fabs(display / refresh - std::round(display / refresh)) < 0.03)
+			std::printf("refresh: %d, a picture every %.0f refreshes of the %.0f Hz display\n", refresh,
+					std::round(display / refresh), display);
+		else
+			std::printf("refresh: %d on a %.0f Hz display: each picture is shown for one refresh or two, "
+					"so motion is uneven (%d suits a display that runs at %d Hz)\n", refresh, display, refresh, refresh);
+	};
 	if (const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window)))
 		if (mode->refresh_rate > 20)
 			period = 1e9 / mode->refresh_rate;
+	if (refresh > 0)
+		report_refresh();
 	double smooth_time = static_cast<double>(last_real);
 	uint64_t previous_real = last_real;
 	bool running = true;
@@ -611,7 +1023,7 @@ int main(int argc, char **argv)
 	auto run_frame = [&]() {
 		input_read.insert(input_read.end(), input_waiting.begin(), input_waiting.end());
 		input_waiting.clear();
-		uint8_t buttons = read_buttons(SDL_GetKeyboardState(nullptr), pad);
+		uint8_t buttons = read_buttons(SDL_GetKeyboardState(nullptr), pad, enter_is_fullscreen);
 		if (!replay_path.empty())
 			buttons = machine->frame_count() < replay.size() ? replay[machine->frame_count()] : 0;
 		machine->set_buttons(buttons);
@@ -634,9 +1046,11 @@ int main(int argc, char **argv)
 			if (machine->frame_count() % 60 == 0)
 				record.flush();
 		}
+#ifdef SPA_RECOMPILED
 		if (game)
 			game->run_frame();
 		else
+#endif
 			machine->run_frame();
 
 		std::vector<int16_t> &samples = machine->audio_samples();
@@ -653,7 +1067,8 @@ int main(int argc, char **argv)
 			const bool wide_view = view.width != 160;
 			ngpc::LevelRam level_ram;
 			if (wide_view)
-				level_ram = ngpc::read_level_ram(*machine);
+				level_ram = ngpc::read_level_ram(*machine, finale);
+			finale = level_ram.finale;
 			// The level's last 64 pixels are unfinished: in a wide view they get
 			// the same floor as before them, and are put back for the original.
 			ngpc::extend_level_ends(*machine, level_ram, wide_view);
@@ -666,6 +1081,8 @@ int main(int argc, char **argv)
 			if (!smoothing)
 				interpolator.render_as_drawn(picture.data());
 		}
+		else
+			finale = false;
 
 		// Persist the flash save area when the game has written to it.
 		if (machine->frame_count() % 60 == 0 && !fresh_cartridge)
@@ -686,10 +1103,40 @@ int main(int argc, char **argv)
 				key == SDL_SCANCODE_RIGHT || key == SDL_SCANCODE_Z || key == SDL_SCANCODE_X || key == SDL_SCANCODE_RETURN;
 	};
 
+	// What the player changed on the Game Option screen between frames (the game's thread is not
+	// running now), applied as the hotkeys apply it, and remembered.
+	auto apply_screen_changes = [&]() {
+		ngpc::HostOptions changed;
+		if (!ngpc::take_option_changes(changed))
+			return;
+		if (changed.aspect != aspect)
+		{
+			aspect = changed.aspect;
+			apply_aspect(true);
+			stored.aspect = aspect;
+		}
+		if (changed.refresh != menu_refresh(refresh))
+		{
+			refresh = changed.refresh;
+			picture_credit = 1;
+			stored.refresh = refresh;
+			report_refresh();
+		}
+		if (changed.drop_dash != drop_dash)
+		{
+			drop_dash = changed.drop_dash;
+			ngpc::set_drop_dash(drop_dash);
+			stored.drop_dash = drop_dash;
+			std::printf("drop dash: %s\n", drop_dash ? "on" : "off");
+		}
+		save_settings(stored);
+	};
+
 	while (running)
 	{
 		if (quit_after > 0 && static_cast<double>(SDL_GetTicksNS() - started_at) / 1e9 > quit_after)
 			running = false;
+		apply_screen_changes();
 		// Wait before reading the buttons (see delay_ms). Only with vsync, when
 		// there is a refresh to be late for.
 		if (vsync && delay_ms > 0.3)
@@ -703,7 +1150,7 @@ int main(int argc, char **argv)
 		while (SDL_PollEvent(&event))
 		{
 			if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && is_game_key(event.key.scancode) &&
-					!(event.key.scancode == SDL_SCANCODE_RETURN && (event.key.mod & SDL_KMOD_ALT)))
+					!is_fullscreen_key(event.key))
 				input_waiting.push_back(event.key.timestamp);
 			else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
 				input_waiting.push_back(event.gbutton.timestamp);
@@ -719,6 +1166,25 @@ int main(int argc, char **argv)
 				apply_aspect(true);
 				stored.aspect = aspect;
 				save_settings(stored);
+				publish_options();
+			}
+			else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.scancode == SDL_SCANCODE_F7)
+			{
+				drop_dash = !drop_dash;
+				ngpc::set_drop_dash(drop_dash);
+				stored.drop_dash = drop_dash;
+				save_settings(stored);
+				publish_options();
+				std::printf("drop dash: %s\n", drop_dash ? "on" : "off");
+			}
+			else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.scancode == SDL_SCANCODE_F6)
+			{
+				refresh = next_refresh(refresh);
+				picture_credit = 1;
+				stored.refresh = refresh;
+				save_settings(stored);
+				publish_options();
+				report_refresh();
 			}
 			else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.scancode == SDL_SCANCODE_F8)
 			{
@@ -728,22 +1194,29 @@ int main(int argc, char **argv)
 				save_settings(stored);
 				std::printf("scale mode: %s\n", scale_mode_name(scale_mode));
 			}
-			else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
-					(event.key.scancode == SDL_SCANCODE_F11 ||
-					(event.key.scancode == SDL_SCANCODE_RETURN && (event.key.mod & SDL_KMOD_ALT))))
+			else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && is_fullscreen_key(event.key))
+			{
+				// (The flags include a change that has been asked for and not yet made.)
 				SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+				if (event.key.scancode == SDL_SCANCODE_RETURN)
+					enter_is_fullscreen = true;
+			}
+			else if (event.type == SDL_EVENT_KEY_UP && event.key.scancode == SDL_SCANCODE_RETURN)
+				enter_is_fullscreen = false;
+			else if (event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN && window_shape_stale)
+				reshape_window();
 			else if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_F9 && recording)
 			{
 				bookmarks << machine->frame_count() - 1 << std::endl;
 				std::printf("bookmarked frame %llu\n", static_cast<unsigned long long>(machine->frame_count() - 1));
 			}
 			else if (event.type == SDL_EVENT_GAMEPAD_ADDED && !pad)
-				pad = SDL_OpenGamepad(event.gdevice.which);
+				pad = open_gamepad(event.gdevice.which);
 			else if (event.type == SDL_EVENT_GAMEPAD_REMOVED && pad &&
 					SDL_GetGamepadID(pad) == event.gdevice.which)
 			{
 				SDL_CloseGamepad(pad);
-				pad = nullptr;
+				pad = open_other_gamepad(event.gdevice.which);
 			}
 		}
 
@@ -785,16 +1258,31 @@ int main(int argc, char **argv)
 		if (clock - next_frame > 2 * frame_ns)
 			clock = next_frame;
 
-		// Show the picture for where the clock is within the current frame.
-		const void *pixels;
-		if (smoothing)
+		// Show the picture for where the clock is within the current frame, unless the rate
+		// asked for is lower than the display's and this refresh repeats the last one.
+		bool new_picture = true;
+		if (vsync && refresh > 0)
 		{
-			interpolator.render(std::clamp((clock - frame_start) / frame_ns, 0.0, 1.0), picture.data());
-			pixels = picture.data();
+			picture_credit = std::min(picture_credit + refresh * period / 1e9, 1.5);
+			if (picture_credit >= 0.97)
+				picture_credit = std::max(picture_credit - 1, 0.0);
+			else
+				new_picture = false;
 		}
-		else
-			pixels = view.width != 160 ? picture.data() : machine->framebuffer();
-		SDL_UpdateTexture(texture, nullptr, pixels, view.width * 4);
+		++presents;
+		if (new_picture)
+		{
+			++pictures_made;
+			const void *pixels;
+			if (smoothing)
+			{
+				interpolator.render(std::clamp((clock - frame_start) / frame_ns, 0.0, 1.0), picture.data());
+				pixels = picture.data();
+			}
+			else
+				pixels = view.width != 160 ? picture.data() : machine->framebuffer();
+			SDL_UpdateTexture(texture, nullptr, pixels, view.width * 4);
+		}
 		// From here to the end of the present is where the loop waits for the
 		// screen (when there is vsync).
 		const uint64_t render_start = SDL_GetTicksNS();
@@ -908,6 +1396,8 @@ int main(int argc, char **argv)
 	if (stats)
 	{
 		present_stats.report("presents");
+		std::fprintf(stderr, "pictures made: %llu of %llu presents (%.1f a second)\n", static_cast<unsigned long long>(pictures_made),
+				static_cast<unsigned long long>(presents), static_cast<double>(pictures_made) * 1e9 / static_cast<double>(SDL_GetTicksNS() - started_at));
 		clock_stats.report("game clock steps");
 		input_latency.report("input to picture presented (the buttons' press to the present returning; the game's own tick comes on top)");
 		if (audio)
@@ -928,7 +1418,9 @@ int main(int argc, char **argv)
 		std::printf("window: pixel density %.2f, output %dx%d pixels, scale mode %s, %s\n", SDL_GetWindowPixelDensity(window),
 				out_w, out_h, scale_mode_name(scale_mode), vsync ? "vsync" : "paced by the clock");
 	}
+#ifdef SPA_RECOMPILED
 	game.reset();
+#endif
 	if (pad)
 		SDL_CloseGamepad(pad);
 	if (audio)

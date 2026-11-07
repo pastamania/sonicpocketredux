@@ -27,8 +27,12 @@ add_library(ngpc STATIC
     src/ngpc/sprite_trace.cpp
     src/ngpc/wide_levels.cpp
     src/ngpc/wide_sprites.cpp
+    src/ngpc/drop_dash.cpp
+    src/ngpc/hook_call.cpp
+    src/ngpc/option_screen.cpp
     src/ngpc/t6w28.cpp
     src/common/png.cpp
+    src/common/cartridge.cpp
 )
 target_include_directories(ngpc PUBLIC src)
 target_link_libraries(ngpc PUBLIC tlcs900 z80core)
@@ -36,6 +40,12 @@ target_link_libraries(ngpc PUBLIC tlcs900 z80core)
 # Headless interpreter runs, screenshots and RAM dumps.
 add_executable(ngpc-run src/apps/ngpc_run.cpp)
 target_link_libraries(ngpc-run PRIVATE ngpc)
+
+# Checks that need no cartridge: `ctest --test-dir <build> -C Release`.
+enable_testing()
+add_executable(cartridge-test tests/cartridge_test.cpp)
+target_link_libraries(cartridge-test PRIVATE ngpc)
+add_test(NAME cartridge COMMAND cartridge-test)
 
 # The static recompiler itself.
 add_executable(spa-recomp
@@ -48,6 +58,7 @@ if(MSVC)
     target_compile_options(tlcs900 PRIVATE /W3)
     target_compile_options(ngpc PRIVATE /W4 /permissive-)
     target_compile_options(ngpc-run PRIVATE /W4 /permissive-)
+    target_compile_options(cartridge-test PRIVATE /W4 /permissive-)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -55,6 +66,7 @@ endif()
 
 set(SPA_ROM "" CACHE FILEPATH "Sonic Pocket Adventure cartridge image used to generate the recompiled code")
 set(SPA_LISTING "" CACHE FILEPATH "Optional listing_instructions.txt for disassembly comments in generated code")
+option(SPA_PLAYER "Build the sonic-pocket player without a cartridge: it holds none of the game and interprets the cartridge it is given when it runs. This is the build to hand out. Ignored when SPA_ROM is set, which builds the player with the recompiled game in it." OFF)
 
 if(SPA_ROM)
     set(SPA_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
@@ -100,7 +112,17 @@ if(SPA_ROM)
     add_executable(spa-verify src/apps/spa_verify.cpp)
     target_link_libraries(spa-verify PRIVATE spa_game)
 
-    # The game, with an SDL3 window, input and audio.
+endif()
+
+# ---------------------------------------------------------------------------
+# The player, with an SDL3 window, input and audio. Two kinds:
+#   SPA_ROM set     the game recompiled from that cartridge is linked in (and the
+#                   interpreter is still there, --interpreter).
+#   SPA_PLAYER on   nothing of the game is linked in; the cartridge is read when the
+#                   program runs and interpreted. Needs no cartridge to build, and
+#                   the result holds no part of it: this is the one to hand out.
+
+if(SPA_ROM OR SPA_PLAYER)
     include(FetchContent)
     set(SDL_SHARED ON CACHE BOOL "" FORCE)
     set(SDL_STATIC OFF CACHE BOOL "" FORCE)
@@ -116,7 +138,14 @@ if(SPA_ROM)
     FetchContent_MakeAvailable(SDL3)
 
     add_executable(sonic-pocket src/apps/sonic_pocket.cpp)
-    target_link_libraries(sonic-pocket PRIVATE spa_game SDL3::SDL3)
+    if(SPA_ROM)
+        message(STATUS "sonic-pocket: with the game recompiled from ${SPA_ROM}")
+        target_link_libraries(sonic-pocket PRIVATE spa_game SDL3::SDL3)
+        target_compile_definitions(sonic-pocket PRIVATE SPA_RECOMPILED)
+    else()
+        message(STATUS "sonic-pocket: without a cartridge (interpreter only)")
+        target_link_libraries(sonic-pocket PRIVATE ngpc SDL3::SDL3)
+    endif()
     add_custom_command(
         TARGET sonic-pocket
         POST_BUILD
@@ -124,4 +153,13 @@ if(SPA_ROM)
             $<TARGET_FILE:SDL3::SDL3>
             $<TARGET_FILE_DIR:sonic-pocket>
     )
+    # The licences go beside the program, and follow any edit to them.
+    add_custom_target(sonic-pocket-notice
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/NOTICE.txt
+            $<TARGET_FILE_DIR:sonic-pocket>
+        COMMENT "Copying NOTICE.txt"
+        VERBATIM
+    )
+    add_dependencies(sonic-pocket sonic-pocket-notice)
 endif()

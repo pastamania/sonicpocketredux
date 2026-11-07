@@ -1,0 +1,34 @@
+name: Windows player
+
+# Builds the program to hand out (no cartridge, none of the game in it) and attaches it to the
+# run as a zip. Started by hand from the Actions tab; nothing is published.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build/player -A x64 -DSPA_PLAYER=ON
+      - name: Build
+        run: cmake --build build/player --config Release --target sonic-pocket
+      - name: Collect the files
+        shell: bash
+        run: |
+          mkdir -p dist/SonicPocket
+          for f in sonic-pocket.exe SDL3.dll NOTICE.txt; do
+            cp "build/player/Release/$f" dist/SonicPocket/
+          done
+          ls -l dist/SonicPocket
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SonicPocket-windows-x64
+          path: dist
+          retention-days: 14
+          if-no-files-found: error

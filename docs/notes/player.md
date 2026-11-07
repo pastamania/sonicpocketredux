@@ -161,6 +161,63 @@ The captured vertical spring supplied Y velocity `0x0D00` before selecting
 animation, applies airborne flags, clears compact collision mode, and returns
 to `player_state_airborne`. The next tick records `0x0C80` after gravity.
 
+## Landing, and the optional drop dash
+
+The player's code keeps the task pointer in `XIZ`, and sets the task's state by
+loading a routine's address into `XWA` and storing it at `(XIZ)`. The airborne
+state's body (`0x39AAF7`, which the jump's first ticks reach from `0x39AAEB` while a
+jump button is held) ends with the landing: after `Plr_IsOnGround` reports the
+ground it calls `0x39ABEC` and `0x3993CE`, which turn the air velocity into the
+ground speed at `+0x18` for the surface under him, and then
+
+    39AB49  LD XWA,0x399EE5        Plr_Walking
+    39AB4E  LD (XIZ),XWA           the new state
+    39AB50  BIT 1,(0x4D40)         Down held?
+    39AB54  JR Z,0x39AB64
+    39AB56  CP (XIZ+0x1A),0        moving?
+    39AB5B  JR Z,0x39AB64
+    39AB5D  LD XWA,0x399F3B        Plr_Rolling
+    39AB62  LD (XIZ),XWA
+    39AB64  CALL 0x39ABCA          Plr_RotateTo0, then SetupObjAni
+
+so landing into a roll is already a path of the game. Observed with `ngpc-run`:
+
+- `+0x18` is the ground speed in the direction he faces, signed, so it is
+  negative when he lands going backwards (jumping right, turning left in the air
+  makes him face left at once, `+0x14` bit 7 set, with `+0x1A` still positive).
+  Walking tops out at about `0x0860`; the spindash's launch speeds (table at
+  `0x3993BC`, nine words, charge 0 to 8) run `0x0A00` to `0x0E00`. Rolling on the
+  level loses `0x10` a tick.
+- `+0x14` bit 7 is set when he faces left. Down is bit 1 (`0x02`) of the buttons
+  at `0x4D40`; A is `0x10` and B `0x20`.
+- The airborne body runs once per game tick (30 Hz).
+
+`--drop-dash` (see `src/ngpc/drop_dash.h`) adds the drop dash of Sonic Mania with
+hooks at these places. It is not in the game and is off by default:
+
+| Address | Hook |
+|---|---|
+| `0x39AA86` Plr_Jumping | arms it (a jump, not a fall, spring or hit) |
+| `0x39AAF7` airborne body | a new press of A or B after the jump starts the charge; held for 10 ticks (Mania's 20 frames) it is charged, and `PlaySound(0xA3)` (the spindash's charge) plays; letting go cancels it. While it charges, `+0x1E` (see below) is put at `0x398B26` every tick so that he stays the solid ball |
+| `0x39AB4E` the landing's store | charged and still held: `PlaySound(0xA2)` (the spindash's release), `+0x18` becomes `speed/4 + 0x0A00` (`speed/2` when negative), at most `0x0E00`, and `XWA` is made Plr_Rolling, so the store makes the roll |
+| `0x39AA54` Plr_Hurt, `0x39A98A` spring launch, `0x39A9BF` death | drops a charge |
+
+The jump's spin is a script at `0x398B20`: eight entries of six bytes (`0x000C`,
+frame word, `0x0103`) with the frames 12 16 14 15 12 13 16 15 and then a jump back
+(`02 20 8B 39`). The task keeps the address of the entry to run next at `+0x1E` (a
+long), advancing six bytes a tick, and the picture shows an entry a tick after it
+ran. Frame `0x16` (the entries at `0x398B26` and `0x398B44`) is the solid blue ball
+(a 3 by 3 block of sprites); the others show his shoes and eyes (twelve sprites).
+Keeping `+0x1E` at `0x398B26` shows the ball every tick, and `+0x15` bit 7, which
+flips between ticks, makes no difference to it.
+
+The sounds are played by sending the CPU to `PlaySound (0x3F1883)` with a
+return address of the hooked instruction, which runs its hook again: a hook can
+not call a routine, and recompiled code ignores a changed program counter, so
+the hosts give the hooks a redirect (`rt::unwind` for recompiled code, the
+program counter for the interpreter). `spa-verify --input buttons.txt
+--drop-dash` runs both machines through a dash in exact lockstep.
+
 ## Collision overview
 
 Grounded movement converts `ground_speed` and `surface_angle` into X/Y
@@ -173,5 +230,4 @@ sensor pipeline and scratch layout are recorded in [collision.md](collision.md).
 The next player pass should finish the remaining movement flag bits and trace
 camera and stage-object state. A short-tap jump trace can confirm the
 variable-height velocity clamp. Movement flag `+0x14` bit 7 controls facing and
-horizontal mirroring; another directed trace will establish its exact
-polarity.
+horizontal mirroring (set when he faces left, see the landing section).

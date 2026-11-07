@@ -16,6 +16,7 @@ traces and ValleyBell's disassembly. Addresses are cartridge (`0x2xxxxx`,
 | [camera.md](camera.md) | Camera origin, stage bounds and follow logic |
 | [sprites.md](sprites.md) | Sprite object list, how it becomes hardware sprites, and who owns each entry |
 | [level-map.md](level-map.md) | Level header, layouts and block table, how the game fills the tile map, and the wide view |
+| [options-screen.md](options-screen.md) | The Game Option screen, and the host's rows on it (drop dash, frame rate, aspect) |
 
 These notes are the starting point for rewriting systems as structured C++ on
 top of the recompiled game.

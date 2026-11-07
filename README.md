@@ -61,11 +61,21 @@ cartridge ──► spa-recomp ──► generated C++ (one function per routine
   reference captures from BizHawk and comparison against the machine.
 - `tools/rominfo.py`: checks that a cartridge image is the expected release
   ([`config/rom.json`](config/rom.json)).
+- `src/common/cartridge.*`: the same check inside the program, and finding the cartridge
+  (as a file or in a zip archive); `tests/cartridge_test.cpp` tests it without a cartridge
+  (`ctest --test-dir build/recomp -C Release`).
+- `tools/check_rom_free.py`: looks for stretches of a cartridge in built files, to confirm
+  that what is handed out holds none of the game (see "Building a version to hand out").
+- `NOTICE.txt`: the licences of the third-party code in the program, which goes with every
+  copy of it.
 
 ## Building
 
-Requirements: Visual Studio 2026 (or another C++20 compiler), CMake 4.2+ and a
-legally obtained copy of the cartridge. SDL3 is downloaded automatically.
+Requirements: a C++20 compiler (Visual Studio 2026 on Windows, Xcode command line
+tools on macOS, GCC or Clang on Linux), CMake 3.25+ and a legally obtained copy of
+the cartridge. SDL3 is downloaded automatically.
+
+Windows:
 
 ```powershell
 cmake -S . -B build/recomp -G "Visual Studio 18 2026" -A x64 `
@@ -73,15 +83,79 @@ cmake -S . -B build/recomp -G "Visual Studio 18 2026" -A x64 `
 cmake --build build/recomp --config Release --target sonic-pocket -- /m:1
 ```
 
+macOS and Linux:
+
+```sh
+cmake -S . -B build/recomp -DCMAKE_BUILD_TYPE=Release \
+      -DSPA_ROM="/path/to/Sonic The Hedgehog - Pocket Adventure (World) (En,Ja).ngc"
+cmake --build build/recomp --target sonic-pocket
+```
+
 The recompiler runs as part of the build and writes the generated sources to
 `build/recomp/generated/`. They are large, so the first build takes a while;
-on low-power machines keep to one compiler process as above.
+on low-power machines keep to one compiler process (`/m:1` above, `-j1` elsewhere).
+
+On Linux, building SDL3 needs its usual development packages (on Debian and Ubuntu:
+`build-essential cmake libudev-dev libx11-dev libxext-dev libwayland-dev libxkbcommon-dev
+libasound2-dev libpulse-dev`, see SDL's own `docs/README-linux.md` for the full list).
+Only Windows is built by the CI; macOS and Linux are not tested there.
+
+### Building a version to hand out
+
+The build above puts the game, recompiled from your cartridge, inside the program. That
+program is a translation of the game and is for your own use. To give the program to other
+people, build it without a cartridge:
+
+```powershell
+cmake -S . -B build/player -G "Visual Studio 18 2026" -A x64 -DSPA_PLAYER=ON
+cmake --build build/player --config Release --target sonic-pocket
+```
+
+(On macOS and Linux: `cmake -S . -B build/player -DCMAKE_BUILD_TYPE=Release -DSPA_PLAYER=ON`.)
+Do not set `SPA_ROM` for this build, and use a build folder of its own. The program holds no
+part of the game: whoever runs it supplies their own cartridge (see Playing), which it
+interprets. It plays the same as the recompiled one (frame 600 of a run is identical to the
+pixel) and costs a little more CPU.
+
+Hand out `sonic-pocket.exe`, `SDL3.dll` and `NOTICE.txt`, which the build puts together in
+`build/player/Release/`. Without a Windows machine, the "Windows player" workflow (Actions tab, Run workflow) builds the
+same thing on GitHub and attaches `SonicPocket-windows-x64.zip` to the run. Download it, unzip
+it, and run the check below on the unzipped folder before handing it on.
+
+Then check that nothing of the cartridge got in:
+
+```powershell
+python tools/check_rom_free.py --rom "path\to\cartridge.ngc" build\player\Release
+```
+
+It exits 0 when every file is clean. It looks for 32 or more bytes in a row that are in both
+the cartridge and a file, ignoring padding and regular tables such as counters, so it finds
+copied data and not code translated from the game's (which holds none of its bytes). A copy
+of 64 bytes or more that has any content is found; it is a check on the build, not a proof.
 
 ## Playing
 
 ```powershell
 build\recomp\Release\sonic-pocket.exe "path\to\cartridge.ngc"
 ```
+
+On macOS and Linux (single-configuration builds put the program straight in
+`build/recomp/`):
+
+```sh
+build/recomp/sonic-pocket "path/to/cartridge.ngc"
+```
+
+The cartridge path is optional. Without it, the program looks for
+`Sonic The Hedgehog - Pocket Adventure (World) (En,Ja).ngc`, and for a zip archive of that
+name (`... (En,Ja).zip`, holding the cartridge under any name), in the folder the program is in
+and then in the folder it was started from. If neither is there it uses the place it last found
+the cartridge (the `rom=` line of `settings.txt` in the preferences folder, below), and if that
+fails too it opens a file dialog. A file is accepted only if its size and CRC-32 are those of the
+World release in [`config/rom.json`](config/rom.json); a file that is not says so and the
+dialog asks again. Wherever the cartridge is found it is remembered, so the dialog is only
+shown when the cartridge has moved. A cartridge named on the command line may also be a zip
+archive, and is checked in the same way.
 
 | Action | Keyboard | Gamepad |
 |---|---|---|
@@ -97,15 +171,16 @@ a picture drawn between the game's frames, so motion follows the monitor's
 refresh rate. Sound is kept in time by nudging the clock by a fraction of a
 percent.
 
-`--aspect original|16:10|16:9` picks the shape of the picture (`--widescreen`
-is 16:9); Tab or F10 cycles through them while playing and the last choice is
+`--aspect 16:9|16:10|original` picks the shape of the picture (`--widescreen`
+is 16:9, the default); Tab or F10 cycles through them while playing and the last choice is
 remembered. In a level a wide view shows the level itself beyond the original
 screen's edges, read from the cartridge, with the HUD at the edges; every other
 screen (title, menus, special stages) is the original 160x152 centred with
 black bars. The game is told to keep the sprites and objects of the extra
 width (it normally drops anything off the 160-pixel screen), so a platform or
 an enemy is there as the wide picture reaches it. The zone's title card is
-centred over the level, which is already where it will be. Where the camera is
+centred over the level, which is already where it will be, and so is the act clear (the
+"Sonic got through" screen), wherever the camera has stopped. Where the camera is
 locked at the end of an act 1 and in the boss arenas (every zone's boss but the
 third's, which has no lock, and the last fight), the level is shown beyond the
 screen instead of black bars and the player may walk to the edges of the picture,
@@ -114,21 +189,49 @@ pixels of the level, never seen before; where an arena's last wall ends before t
 data does, the wall's last column of tiles is repeated); the first zone's boss goes
 the whole width. The third zone's boss is as it was. The fifth zone's flight shows its
 plane once (it is a picture the game slides, which wrapped round into the extra width),
-and its two flapping bird robots start beyond the picture and fly in. Those are
+its two flapping bird robots start beyond the picture and fly in, and at its end the
+level's last 64 pixels are shown, so the view is as centred there as in any other act. The
+last fight's machine is drawn by the game one half at a time, the half on the screen, so the
+game is told to draw the half in the wide view's margin too. When the machine is beaten his pod
+comes out, and the player has to hit it to end the level: the explosions and the pod's approach are
+wide, but from that second hit through the act clear, the walk across the level, the fade and the
+endings and the credits, which are made for 160 pixels, the picture is centred between black bars
+like the other screens. The last bonus level, Chaotic Space (the level select's last entry), has no level
+behind its picture, only the planet and the stars, two pictures of 256 pixels that the game slides round, so a
+wide view draws them all the way round (a 16:9 view sees the first 14 columns again at its far end, which
+is not noticed in a sky, but is in Robotnik's machine: its body is a block of the front picture that the game
+moves by sliding the picture, so it is drawn once, in the lap of the ring where the machine is, and not again
+at the far side) and Super Sonic may fly to the edges of the picture; the fight is wide from its title card to the end of the
+machine's defeat, and the act clear and the scenes after it, made for 160 pixels, are centred between black
+bars as the last fight's end is. Those are
 the things a wide view does to the game itself: objects wake up a little
-earlier, the player and the first boss get more room, and the longer sprite
+earlier, the player and the first boss get more room, the last boss's machine is drawn whole, and the longer sprite
 list can move the game's tick by a frame, so a recording made in one aspect plays
 back exactly only in that aspect. A wide view also eases the vertical camera, which
 the game starts and stops abruptly (the horizontal one follows Sonic's speed): the
 level and the sprites move together, up to 12 pixels from where the game has them,
 and the game keeps the sprites of that margin above and below the screen as it does
-those at the sides.
+those at the sides. The pause banner (Option) goes across the whole width of the picture, over the level.
+
+`--refresh auto|60|90|120` (F6 steps through 60, 90 and 120 while playing; the choice is remembered, and
+60 is the default) sets how many pictures a second are shown. `auto` (command line only) shows one for
+every refresh of the display, whatever its rate.
+60 is one for each of the game's own frames (the scenery steps every second frame, so the other is
+half way), 90 is three for every game step and 120 is four. The rate suits a display that runs at that
+rate or a multiple of it: on a 120 Hz display 60 repeats each picture for two refreshes, 120 is a new
+picture every refresh, and 90 is shown for one refresh or two alternately, so it is uneven there; a
+display slower than the rate asked for simply shows every refresh. Every picture between the game's
+steps places the level and the sprites to a quarter of a pixel, so a fast scroll moves evenly at any of
+these rates and not by a different whole number of pixels from one refresh to the next (`--no-subpixel`
+puts them back on whole pixels, to compare).
 
 The picture is fitted to the window by `--scale-mode`: `sharp` (the default; F8 cycles
 the modes and the choice is remembered) fills the window with evenly wide pixels at any
 size, `integer` uses whole multiples with bars (270 x 7 = 1890 pixels at 1080p), and
 `nearest` is plain scaling, which gives pixels of two different widths unless the window
-happens to be a whole multiple. F11 or Alt+Enter toggles borderless fullscreen. The window
+happens to be a whole multiple. The game opens in borderless fullscreen, and F11 or Alt+Enter
+switches between that and a window (`--windowed` opens in a window; `--window` and `--screenshot`
+do too, and `--fullscreen` overrides them; it is not remembered). The window
 is made with a high pixel density, so a Retina display is drawn in its own pixels and not
 scaled up (and softened) by the system. The sound is kept `--audio-latency` frames deep
 (default 2, about 36 ms; it raises itself by a frame if the device runs dry), where it was
@@ -138,6 +241,30 @@ buttons so that they are read late in the refresh; `auto` does this only where a
 `--stats` reports how long a key press takes to reach a presented picture and how deep the
 sound queue was. `--window WIDTHxHEIGHT` sets the window's size, and `--screenshot file.png
 [--screenshot-at FRAME]` writes the window's picture (in the display's pixels) and quits.
+
+The three choices above are also rows of the game's own Game Option screen (title menu, Go To Room,
+Game Option), under Difficulty, Time Out and Player: **Drop Dash** (on or off), **Frame Rate** (60, 90 or 120
+Hz) and **Aspect** (16:9, 16:10 or Original), with Sound Test and Special Stage between Drop Dash and
+Frame Rate once they are unlocked. They take the place of Auto Power Off, which did nothing here, and of
+Exit (B leaves, as it did). Left and Right (or A) change a row; a change is applied at once and remembered
+like the hotkeys', and the hotkeys change the rows. The rows are the host's, not the game's: they are not
+in the save. How the screen is taken over is in [`docs/notes/options-screen.md`](docs/notes/options-screen.md).
+`ngpc-run` and `spa-verify` leave the screen as the game has it unless given `--option-screen`.
+
+`--drop-dash` (or F7 while playing, which is remembered; `--no-drop-dash` turns it off for
+a run) gives Sonic the drop dash of *Sonic Mania*, a move the game does not have, so it is off
+unless asked for. Jump, press a jump button again in the air and keep it held: after about a
+third of a second the spindash's rev sounds and he is charged (letting go before landing cancels
+it); from the press he spins as the solid blue ball, not the frames that show his shoes and eyes.
+Landing with the button still held starts a roll at once, at a quarter of the speed he
+came in with plus the spindash's weakest launch speed (half of it if he lands going backwards),
+up to its strongest. It works through hooks on the player's code and reaches the game's own
+state, so with it on a recording replays exactly only with it on; with it off nothing changes. (A
+recording made while using the Game Option screen's rows replays exactly only with `ngpc-run
+--option-screen`, and one made in the window now defaults to 16:9, so `ngpc-run` needs `--aspect 16:9`.)
+`ngpc-run` and `spa-verify` take `--drop-dash` as well (`spa-verify --input buttons.txt
+--drop-dash` checks that recompiled and interpreted play stay in lockstep through a dash, and
+`--option-screen` through a visit to the Game Option screen).
 
 Options: `--scale N` (window size, default 4), `--japanese`,
 `--no-smoothing` (show only the game's own frames),
@@ -151,7 +278,28 @@ back in the window, and F9 bookmarks the frame on screen;
 `ngpc-run --rom <cartridge> --input input.txt --bookmarks input.txt.bookmarks`
 then replays the session headlessly and writes a contact sheet of the real and
 in-between pictures around each bookmark. Save data is stored in the SDL preferences folder
-(`%APPDATA%\SonicPocket\SonicPocket\flash_save.bin` on Windows).
+(`%APPDATA%\SonicPocket\SonicPocket\flash_save.bin` on Windows,
+`~/Library/Application Support/SonicPocket/SonicPocket/` on macOS,
+`~/.local/share/SonicPocket/SonicPocket/` on Linux).
+
+### Gamepads
+
+Any pad that SDL3 recognises works on Windows, macOS and Linux, and can be
+plugged in before or during play. The first pad found is used; if it is unplugged,
+the next one connected takes over. The name of the pad in use is printed when it is
+opened.
+
+- A pad that SDL has no mapping for is ignored (nothing is printed). Give it one with
+  an SDL controller mapping string in the `SDL_GAMECONTROLLERCONFIG` environment
+  variable, or put a `gamecontrollerdb.txt`
+  ([the community database](https://github.com/mdqinc/SDL_GameControllerDB)) next to
+  the executable or in the folder that holds the save data. The game prints how many
+  mappings it read from each file.
+- Linux: you need read access to `/dev/input/event*` (a normal desktop login has it;
+  otherwise join the `input` group). PlayStation and Switch Pro pads read through
+  HIDAPI also need udev rules for `/dev/hidraw*`, which Steam and most distributions
+  install.
+- Input from a pad is only delivered while the game's window has focus.
 
 ## Verifying
 
@@ -168,8 +316,11 @@ To compare the machine against BizHawk, capture a reference with
 
 This repository contains no ROM data, extracted assets, BIOS or generated
 code. The recompiled C++ is produced at build time from your own cartridge.
-Committed files are original code, MIT/BSD-licensed third-party code with its
-notices, and facts about the ROM such as routine addresses.
+Committed files are original code ([MIT licence](LICENSE)), MIT/BSD-licensed third-party
+code with its notices ([`NOTICE.txt`](NOTICE.txt)), and facts about the ROM such as routine
+addresses.
+A program built with `SPA_ROM` contains the game, translated, and is not to be handed out;
+the one built with `SPA_PLAYER` is.
 
 ## Documentation
 

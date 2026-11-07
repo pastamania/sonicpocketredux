@@ -4,6 +4,7 @@
 
 #include "k2ge_render.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace k2ge_render {
@@ -179,8 +180,10 @@ void draw_wide_plane(const uint8_t *vram, uint16_t *p, const View &view, const W
 	}
 }
 
+// `p` holds `scale` samples to each pixel of the view (1, or SUBPIXELS when sprites are
+// placed to a fraction of a pixel with SpriteShift::sub).
 void draw_sprite_plane(const uint8_t *vram, uint16_t *p, const View &view, uint16_t priority, int line,
-		const LineRegs &regs, const SpriteShift *shift)
+		const LineRegs &regs, const SpriteShift *shift, int scale = 1)
 {
 	struct sprite_t
 	{
@@ -265,9 +268,199 @@ void draw_sprite_plane(const uint8_t *vram, uint16_t *p, const View &view, uint1
 				out_x = (spr[i].x + j - origin) & 0xff;
 
 			const uint16_t col = get_pixel(hflip, tile_data);
-			if (out_x >= 0 && out_x < view.width && col)
+			if (out_x < 0 || out_x >= view.width || !col)
+				continue;
+			if (scale == 1)
 				p[out_x] = pcode + col;
+			else
+			{
+				// A sprite that is not an object's stays inside the stock screen.
+				const int end = (ref[i] == SpriteShift::NO_REF && view.width > 160 ? 160 - view.origin : view.width) * scale;
+				const int first = out_x * scale + (shift ? shift->sub[spr[i].index] : 0);
+				for (int m = 0; m < scale && first + m < end; m++)
+					p[first + m] = pcode + col;
+			}
 		}
+	}
+}
+
+// Plane 1 and plane 2 of a line, as the view and the wide scene say, into `p` (which holds
+// a pen for each pixel of `view`, or leaves it alone where the plane is clear).
+void draw_plane1(const uint8_t *vram, uint16_t *p, const View &view, const LineRegs &regs, int line,
+		const WideScene *wide)
+{
+	const bool use_wide = wide && wide->active;
+	if (use_wide && wide->plane1 && !wide->ring)
+		draw_wide_plane(vram, p, view, *wide, 0, line, regs.wx1, regs.s1y, 0x40);
+	else if (use_wide && wide->p1_window)
+		draw_scroll_plane(vram, p, view, 0x1000, line, regs.s1x, regs.s1y, 0x40,
+				regs.p1_lo - view.origin, regs.p1_lo - view.origin + 256);
+	else if (use_wide && wide->centred)
+	{
+		// The card, in the middle of the view. Its text lives in the ring
+		// beyond the screen's right edge, slides in from there and leaves
+		// there again. The ring is 256 pixels round and the view up to 270, so
+		// drawn all round the ring would show the part beyond the right edge
+		// again at the far left: one lap is drawn, from the screen's left
+		// edge, and only the screen's own 160 pixels until the card moves.
+		View card = view;
+		card.origin = view.card_origin;
+		const int lo = -card.origin;
+		const int hi = lo + (wide->card_hold ? 160 : 256);
+		draw_scroll_plane(vram, p, card, 0x1000, line, regs.s1x, regs.s1y, 0x40, lo, hi);
+	}
+	else
+		draw_scroll_plane(vram, p, view, 0x1000, line, regs.s1x, regs.s1y, 0x40);
+}
+
+// Plane 2 on a band line (LineRegs::band): the game's own picture, the pause banner, which it
+// keeps in a few of the plane's ring rows and shows by moving the plane's scroll to them. It is
+// made for the machine's 160 pixels, so it is drawn from the hardware's ring in the middle of the
+// view (View::card_origin), where it is on the screen, and the pixel at each edge of the screen is
+// carried on to the view's edges, so the banner goes right across a wider picture. (What lies
+// in the ring beside the banner is not drawn: the game keeps no picture there.)
+void draw_band_plane(const uint8_t *vram, uint16_t *p, const View &view, const LineRegs &regs, int line)
+{
+	const int base = 0x1800 + (((regs.s2y + line) >> 3) & 0x1f) * 0x40;
+	for (int i = 0; i < view.width; i++)
+	{
+		const int ring_x = std::clamp(i + view.card_origin, 0, 159) + regs.s2x;
+		uint16_t pcode, tile_data;
+		bool hflip;
+		get_tile_data_for(vram, word(vram, base + ((ring_x >> 3) & 0x1f) * 2), line, regs.s2y, 0x80, pcode, hflip, tile_data);
+		const int px = ring_x & 7;
+		const uint16_t pixel = hflip ? (tile_data >> (2 * px)) & 3 : (tile_data >> (14 - 2 * px)) & 3;
+		if (pixel)
+			p[i] = pcode + pixel;
+	}
+}
+
+void draw_plane2(const uint8_t *vram, uint16_t *p, const View &view, const LineRegs &regs, int line,
+		const WideScene *wide)
+{
+	if (wide && wide->active && regs.band)
+		draw_band_plane(vram, p, view, regs, line);
+	else if (wide && wide->active && !wide->ring)
+		draw_wide_plane(vram, p, view, *wide, 1, line, regs.wx2, regs.s2y, 0x80);
+	else
+		draw_scroll_plane(vram, p, view, 0x1800, line, regs.s2x, regs.s2y, 0x80);
+}
+
+constexpr uint16_t NO_PEN = 0xffff;
+
+// Whether anything on the line is placed to a fraction of a pixel.
+bool needs_subpixels(const LineRegs &regs, const SpriteShift *shift)
+{
+	if (regs.sub1x || regs.sub2x)
+		return true;
+	if (shift)
+		for (int i = 0; i < SPRITES; i++)
+			if (shift->sub[i])
+				return true;
+	return false;
+}
+
+// One colour from the SUBPIXELS samples a pixel was drawn with: the average of their colours.
+inline uint32_t pixel_from_samples(const uint8_t *palette, const uint16_t *samples)
+{
+	bool same = true;
+	for (int m = 1; m < SUBPIXELS; m++)
+		same &= samples[m] == samples[0];
+	if (same)
+		return pen_to_argb(palette, samples[0]);
+	uint32_t r = 0, g = 0, b = 0;
+	for (int m = 0; m < SUBPIXELS; m++)
+	{
+		const uint32_t c = pen_to_argb(palette, samples[m]);
+		r += (c >> 16) & 0xff;
+		g += (c >> 8) & 0xff;
+		b += c & 0xff;
+	}
+	return 0xff000000u | ((r / SUBPIXELS) << 16) | ((g / SUBPIXELS) << 8) | (b / SUBPIXELS);
+}
+
+// The same line as render_line draws, with the scroll planes and the sprites placed to
+// 1/SUBPIXELS of a pixel (LineRegs::sub1x, sub2x and SpriteShift::sub). The line is drawn
+// with SUBPIXELS samples to a pixel and each pixel takes the average of its samples, so a
+// layer that is a fraction of a pixel across shows its edge pixels blended, and one on a
+// whole pixel is exactly as render_line draws it.
+void render_line_subpixels(const uint8_t *vram, const uint8_t *palette, const LineRegs &regs, int line,
+		const View &view, const SpriteShift *shift, uint32_t *out, const WideScene *wide)
+{
+	constexpr int S = SUBPIXELS;
+	const int width = view.width;
+	const bool use_wide = wide && wide->active;
+	uint16_t samples[MAX_WIDTH * S];
+
+	// A scroll plane is drawn at whole pixels, a column wider than the view (the column a
+	// leftward shift brings in), and laid into the samples `sub` of them to the left.
+	View lane_view = view;
+	lane_view.width = width + 1;
+	uint16_t lane[MAX_WIDTH + 1];
+	auto lay_plane = [&](bool first, int sub) {
+		std::fill(lane, lane + width + 1, NO_PEN);
+		if (first)
+			draw_plane1(vram, lane, lane_view, regs, line, wide);
+		else
+			draw_plane2(vram, lane, lane_view, regs, line, wide);
+		for (int k = 0; k <= width; k++)
+		{
+			if (lane[k] == NO_PEN)
+				continue;
+			for (int m = 0; m < S; m++)
+			{
+				const int j = k * S - sub + m;
+				if (j >= 0 && j < width * S)
+					samples[j] = lane[k];
+			}
+		}
+	};
+	auto sprites = [&](uint16_t priority) { draw_sprite_plane(vram, samples, view, priority, line, regs, shift, S); };
+	const uint16_t oowcol = 0xf8 + (regs.oow & 7);
+
+	if (line < regs.wba_v || line >= regs.wba_v + regs.wsi_v)
+		std::fill(samples, samples + width * S, oowcol);
+	else
+	{
+		const uint16_t bgcol = 0xf0 + (((regs.bg & 0xc0) == 0x80) ? (regs.bg & 7) : 0);
+		std::fill(samples, samples + width * S, bgcol);
+
+		if (bit(regs.pf, 7))
+		{
+			sprites(1);
+			lay_plane(true, regs.sub1x);
+			sprites(2);
+			lay_plane(false, regs.sub2x);
+			sprites(3);
+		}
+		else
+		{
+			sprites(1);
+			lay_plane(false, regs.sub2x);
+			sprites(2);
+			lay_plane(true, regs.sub1x);
+			sprites(3);
+		}
+
+		if (!(regs.wba_h == 0 && regs.wsi_h >= 160))
+			for (int i = 0; i < width; i++)
+			{
+				const int sx = i + view.origin;
+				if (sx < regs.wba_h || sx >= regs.wba_h + regs.wsi_h)
+					std::fill(samples + i * S, samples + (i + 1) * S, oowcol);
+			}
+	}
+
+	for (int i = 0; i < width; i++)
+	{
+		const int sx = i + view.origin;
+		bool black = view.screen_only && (sx < 0 || sx >= 160);
+		if (use_wide)
+		{
+			const int world_x = regs.wx2 + sx;
+			black = world_x < wide->min_x || world_x >= wide->max_x;
+		}
+		out[i] = black ? 0xff000000u : pixel_from_samples(palette, samples + i * S);
 	}
 }
 
@@ -277,37 +470,15 @@ void draw_sprite_plane(const uint8_t *vram, uint16_t *p, const View &view, uint1
 void render_line(const uint8_t *vram, const uint8_t *palette, const LineRegs &regs, int line,
 		const View &view, const SpriteShift *shift, uint32_t *out, const WideScene *wide)
 {
+	if (needs_subpixels(regs, shift))
+	{
+		render_line_subpixels(vram, palette, regs, line, view, shift, out, wide);
+		return;
+	}
 	uint16_t p[MAX_WIDTH];
 	const bool use_wide = wide && wide->active;
-	auto plane1 = [&]() {
-		if (use_wide && wide->plane1)
-			draw_wide_plane(vram, p, view, *wide, 0, line, regs.wx1, regs.s1y, 0x40);
-		else if (use_wide && wide->p1_window)
-			draw_scroll_plane(vram, p, view, 0x1000, line, regs.s1x, regs.s1y, 0x40,
-					regs.p1_lo - view.origin, regs.p1_lo - view.origin + 256);
-		else if (use_wide && wide->centred)
-		{
-			// The card, in the middle of the view. Its text lives in the ring
-			// beyond the screen's right edge, slides in from there and leaves
-			// there again. The ring is 256 pixels round and the view up to 270, so
-			// drawn all round the ring would show the part beyond the right edge
-			// again at the far left: one lap is drawn, from the screen's left
-			// edge, and only the screen's own 160 pixels until the card moves.
-			View card = view;
-			card.origin = view.card_origin;
-			const int lo = -card.origin;
-			const int hi = lo + (wide->card_hold ? 160 : 256);
-			draw_scroll_plane(vram, p, card, 0x1000, line, regs.s1x, regs.s1y, 0x40, lo, hi);
-		}
-		else
-			draw_scroll_plane(vram, p, view, 0x1000, line, regs.s1x, regs.s1y, 0x40);
-	};
-	auto plane2 = [&]() {
-		if (use_wide)
-			draw_wide_plane(vram, p, view, *wide, 1, line, regs.wx2, regs.s2y, 0x80);
-		else
-			draw_scroll_plane(vram, p, view, 0x1800, line, regs.s2x, regs.s2y, 0x80);
-	};
+	auto plane1 = [&]() { draw_plane1(vram, p, view, regs, line, wide); };
+	auto plane2 = [&]() { draw_plane2(vram, p, view, regs, line, wide); };
 	const uint16_t oowcol = 0xf8 + (regs.oow & 7);
 
 	if (line < regs.wba_v || line >= regs.wba_v + regs.wsi_v)

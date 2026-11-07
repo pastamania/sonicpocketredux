@@ -2,7 +2,10 @@
 // writes screenshots and compares work RAM with a BizHawk reference capture
 // produced by scripts/bizhawk-dump-reference.lua.
 
+#include "apps/input_log.h"
 #include "common/png.h"
+#include "ngpc/drop_dash.h"
+#include "ngpc/option_screen.h"
 #include "ngpc/k2ge_interp.h"
 #include "ngpc/machine.h"
 #include "ngpc/level_map.h"
@@ -35,35 +38,6 @@ std::vector<uint8_t> read_file(const fs::path &path)
 	return std::vector<uint8_t>(std::istreambuf_iterator<char>(file), {});
 }
 
-// BizHawk input log: "<framecount>\t<Button,Button,...>" per line.
-std::map<int, uint8_t> read_input_log(const fs::path &path)
-{
-	std::map<int, uint8_t> inputs;
-	std::ifstream file(path);
-	std::string line;
-	int index = 0;
-	while (std::getline(file, line))
-	{
-		const auto tab = line.find('\t');
-		const std::string names = tab == std::string::npos ? "" : line.substr(tab + 1);
-		uint8_t buttons = 0;
-		std::stringstream stream(names);
-		std::string name;
-		while (std::getline(stream, name, ','))
-		{
-			if (name.find("Up") != std::string::npos) buttons |= ngpc::BUTTON_UP;
-			else if (name.find("Down") != std::string::npos) buttons |= ngpc::BUTTON_DOWN;
-			else if (name.find("Left") != std::string::npos) buttons |= ngpc::BUTTON_LEFT;
-			else if (name.find("Right") != std::string::npos) buttons |= ngpc::BUTTON_RIGHT;
-			else if (name.find("Option") != std::string::npos) buttons |= ngpc::BUTTON_OPTION;
-			else if (name.size() >= 1 && name.back() == 'A') buttons |= ngpc::BUTTON_A;
-			else if (name.size() >= 1 && name.back() == 'B') buttons |= ngpc::BUTTON_B;
-		}
-		inputs[index++] = buttons;
-	}
-	return inputs;
-}
-
 // A machine that tells the game it is on a given level whenever the game asks
 // (the level number lives in RAM at 0x67D2), so that every level can be
 // examined without playing to it. Development aid; the interpreter only.
@@ -86,7 +60,7 @@ void usage()
 		"                [--reference-offset K] [--input input.txt] [--check-render] [--interp-frames a,b,c]\n"
 		"                [--sprite-tables first-last] [--check-trace] [--interp-metrics]\n"
 		"                [--bookmarks file] [--radius N] [--aspect original|16:10|16:9] [--check-wide]\n"
-		"                [--level N] [--warp frame,x,y] [--no-end-fill]\n";
+		"                [--level N] [--warp frame,x,y] [--no-end-fill] [--no-subpixel]\n";
 }
 
 } // namespace
@@ -107,8 +81,13 @@ int main(int argc, char **argv)
 	int tables_first = -1, tables_last = -1;   // frames whose sprite tables are printed
 	bool check_trace = false;
 	bool interp_metrics = false;
+	bool subpixel = true;   // --no-subpixel: the in-between pictures at whole pixels
 	bool no_end_fill = false;   // --no-end-fill: leave the last 64 pixels of the levels as the game has them
 	bool check_wide = false;
+	bool drop_dash = false;   // --drop-dash: the optional move (see ngpc/drop_dash.h)
+	bool option_screen = false;   // --option-screen: the host's rows on the Game Option screen (ngpc/option_screen.h)
+	bool check_centre = false;   // --check-centre: a wide picture's screen must equal the machine's own
+	int centre_bad = 0, centre_checked = 0, centre_from = 0, centre_to = 1 << 30;   // --centre-from, --centre-to: the frames checked
 	int forced_level = -1;
 	int warp_frame = -1, warp_x = 0, warp_y = 0;   // --warp: put the player somewhere else in the level
 	fs::path bookmarks_path;   // frames to lay out as contact sheets (one frame number per line)
@@ -159,8 +138,14 @@ int main(int argc, char **argv)
 		}
 		else if (arg == "--check-trace") check_trace = true;
 		else if (arg == "--interp-metrics") interp_metrics = true;
+		else if (arg == "--no-subpixel") subpixel = false;
 		else if (arg == "--no-end-fill") no_end_fill = true;
 		else if (arg == "--check-wide") check_wide = true;
+		else if (arg == "--drop-dash") drop_dash = true;
+		else if (arg == "--option-screen") option_screen = true;
+		else if (arg == "--check-centre") check_centre = true;
+		else if (arg == "--centre-from") centre_from = std::stoi(next());
+		else if (arg == "--centre-to") centre_to = std::stoi(next());
 		else if (arg == "--level") forced_level = std::stoi(next());
 		else if (arg == "--warp")
 		{
@@ -192,8 +177,11 @@ int main(int argc, char **argv)
 	// The wide pictures (--aspect) are drawn by their own interpolator, fed the
 	// same frames, with the level's maps from the cartridge.
 	k2ge_render::Interpolator wide_interpolator{ k2ge_render::aspect_view(aspect) };
+	interpolator.set_subpixel(subpixel);
+	wide_interpolator.set_subpixel(subpixel);
 	std::unique_ptr<k2ge_render::WideScene> wide_scene = std::make_unique<k2ge_render::WideScene>();
 	std::unique_ptr<ngpc::LevelMap> level_map;
+	bool finale = false;   // the last fight's pod has been hit (LevelRam::finale)
 	int wide_snaps = 0, wide_left_prev = -1, wide_uncovered = 0, wide_frames = 0, wide_active = 0, wide_imperfect = 0, wide_switches = 0, wide_clipped = 0, wide_narrowed = 0;
 	// --check-wide: what the wide view showed beyond the screen last frame,
 	// by plane, world column and row, to compare with what the game then draws
@@ -220,6 +208,12 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	machine.level = forced_level;
+	if (drop_dash || option_screen)
+		ngpc::set_hook_redirect(ngpc::redirect_interpreted);
+	if (drop_dash)
+		ngpc::set_drop_dash(true);
+	if (option_screen)
+		ngpc::set_option_screen(true);
 	machine.boot();
 	machine.trace_instructions(trace_count);
 	level_map = std::make_unique<ngpc::LevelMap>(machine.cartridge());
@@ -347,9 +341,12 @@ int main(int argc, char **argv)
 		if (aspect != k2ge_render::Aspect::Original || check_wide)
 		{
 			++wide_frames;
-			const ngpc::LevelRam level_ram = ngpc::read_level_ram(machine);
+			const ngpc::LevelRam level_ram = ngpc::read_level_ram(machine, finale);
+			finale = level_ram.finale;
 			ngpc::extend_level_ends(machine, level_ram, aspect != k2ge_render::Aspect::Original && !no_end_fill);
 			const bool active = level_map->build(machine.video().frame(), level_ram, *wide_scene);
+			// (A ring scene, Chaotic Space's, holds no tiles: the hardware's rings are drawn as they are.)
+			const bool tiles = active && !wide_scene->ring;
 			if (aspect != k2ge_render::Aspect::Original)
 			{
 				const int extra = k2ge_render::aspect_width(aspect) - 160;
@@ -374,7 +371,7 @@ int main(int argc, char **argv)
 					return (static_cast<uint64_t>(plane) << 48) | (static_cast<uint64_t>(column & 0xffffff) << 24) |
 							static_cast<uint64_t>(row & 0xffffff);
 				};
-				if (active)
+				if (tiles)
 				{
 					const int first_column = wide_scene->world_x >> 3, first_ring_row = f.line[0].s2y >> 3;
 					const int top_row = wide_scene->row[first_ring_row];
@@ -439,6 +436,42 @@ int main(int argc, char **argv)
 			if (aspect != k2ge_render::Aspect::Original)
 			{
 				wide_interpolator.push(machine.video().frame(), table, wide_scene.get());
+				// --check-centre: the part of the picture where the machine's own screen
+				// lies must be that screen (where the level is drawn from the scene, the
+				// scene must have it right). Sprites that only a wide view keeps may differ
+				// where they overlap, so a few pixels are allowed to differ.
+				if (check_centre && active && frame >= centre_from && frame < centre_to)
+				{
+					int first = 0, last = 0;
+					if (wide_interpolator.wide_extent(first, last))
+					{
+						const int width = k2ge_render::aspect_width(aspect), left = wide_scene->world_x - first;
+						std::vector<uint32_t> picture(static_cast<size_t>(width) * k2ge_render::LINES);
+						wide_interpolator.render_as_drawn(picture.data());
+						int bad = 0, x0 = 999, x1 = -1, y0 = 999, y1 = -1;
+						for (int y = 0; y < k2ge::SCREEN_HEIGHT; y++)
+							for (int x = 0; x < k2ge::SCREEN_WIDTH; x++)
+								// (The HUD, at the picture's edges, is not where the machine put it.)
+								if (!((x < 48 && y < 56) || (x < 32 && y >= 136)) && picture[static_cast<size_t>(y) * width + left + x] != machine.framebuffer()[y * k2ge::SCREEN_WIDTH + x])
+								{
+									++bad;
+									x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y);
+								}
+						++centre_checked;
+						if (bad > 0)
+						{
+							++centre_bad;
+							if (centre_bad <= 12)
+								std::printf("frame %d: %d pixels of the screen differ, x %d..%d y %d..%d\n", frame, bad, x0, x1, y0, y1);
+							if (centre_bad == 1)
+							{
+								// Both pictures of the first frame that differs, to look at.
+								write_png(out_dir / "centre_machine.png", machine.framebuffer(), k2ge::SCREEN_WIDTH, k2ge::SCREEN_HEIGHT);
+								write_png(out_dir / "centre_wide.png", picture.data(), width, k2ge::SCREEN_HEIGHT);
+							}
+						}
+					}
+				}
 				// The scene must hold a tile for every column of the view.
 				int first = 0, last = 0;
 				if (active && wide_interpolator.wide_extent(first, last))
@@ -455,7 +488,7 @@ int main(int argc, char **argv)
 				}
 				else
 					wide_left_prev = -1;
-				if (active && wide_interpolator.wide_extent(first, last) &&
+				if (tiles && wide_interpolator.wide_extent(first, last) &&
 						(first < wide_scene->first_col * 8 || last > (wide_scene->first_col + k2ge_render::WIDE_COLS) * 8))
 				{
 					++wide_uncovered;
@@ -643,6 +676,8 @@ int main(int argc, char **argv)
 		std::printf("trace check: %d of %d frames with visible sprites pair with a traced expansion\n", sprite_frames_matched, sprite_frames);
 	if (check_render)
 		std::printf("render check: %d of %d frames differ\n", render_mismatches, frames);
+	if (check_centre)
+		std::printf("centre check: %d of %d wide frames differ from the machine's own screen\n", centre_bad, centre_checked);
 	if (!reference.empty() && first_mismatch < 0)
 		std::printf("RAM matched the reference for all compared frames\n");
 	return 0;

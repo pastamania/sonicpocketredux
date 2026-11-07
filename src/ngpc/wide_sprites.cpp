@@ -67,6 +67,46 @@ constexpr int SPRITE_Y_LIMIT = 0x9E;
 constexpr uint32_t BIRD_WAKE = 0x3E2BE5;
 constexpr int BIRD_WAKE_X = 0xB4;
 
+// The last fight's hull (Boss6 on level 12; Robotnik's machine is a block of plane 1's
+// tiles 19 columns wide) is drawn by the code at 0x3A5560 from a flag word in the boss's
+// task: the half of the hull that is off the screen is not drawn, its columns of the map
+// are filled with a blank tile. The flags are worked out at
+//   0x3A55F8  LDW WA,(XIZ+0x12)   the boss's x
+//   0x3A55FB  SUB WA,IX           less the camera's
+//   0x3A55FD  JR LE ...           the left half is off the screen: x <= 0   (hook)
+//   0x3A55FF  CP WA,0xA0
+//   0x3A5603  JR LT ...           else the right half is, if x >= 160       (hook)
+// A wide view shows 55 pixels of each half beyond the screen's edge, and the half
+// was gone from it (the boss was a hull with a straight cut down its middle). With
+// a margin the tests are for what the wider view cannot show: x <= -margin and
+// x >= 160 + margin.
+constexpr uint32_t HULL_LEFT = 0x3A55FD;
+constexpr uint32_t HULL_RIGHT = 0x3A5603;
+constexpr uint8_t FLAG_S = 0x80, FLAG_V = 0x04;
+
+// The actors of a level's opening cutscene (Robotnik running across the screen at the start of
+// the last level) are tasks that run a state at 0x39EBC8, which ends a cutscene's actor when he
+// leaves the screen on the right:
+//   0x39EBD6  CALL 0x39D849   IX = the object's x less the camera's
+//   0x39EBDA  CP IX,0xB0
+//   0x39EBDE  RET LT          hook: he goes on while IX < 0xB0
+//   (then the player's speed is set, which starts Sonic, and the task is ended)
+// A wide view at the start of a level shows twice the margin beyond the screen's right
+// edge (the camera is at its lowest, so there is nothing to show on the left), and Robotnik
+// was gone from it 16 pixels beyond the screen's edge, in the middle of the picture. With
+// a margin he goes on for that much more, to beyond the widest picture.
+constexpr uint32_t ACTOR_EXIT = 0x39EBDE;
+constexpr int ACTOR_EXIT_X = 0xB0;
+
+// Super Sonic in Chaotic Space (level 13) is kept to the world by his own routine (0x39B2EA, run
+// as he moves): his x, in the player's record (+0x12), is held between the camera's range start
+// (0x67DE) plus 0x0E and its end (0x67E0) plus 0x92, which is 14 pixels in from each edge of the
+// screen at the ends of the camera's range. The bounds are in WA when each is compared:
+//   0x39B2F2  CPW (XIX+0x12),WA   the lower bound   (hook)
+//   0x39B302  CPW (XIX+0x12),WA   the upper bound   (hook)
+constexpr uint32_t SPACE_PLAYER_LEFT = 0x39B2F2;
+constexpr uint32_t SPACE_PLAYER_RIGHT = 0x39B302;
+
 constexpr uint32_t PLAYER_LEFT = 0x39C499;
 constexpr uint32_t PLAYER_RIGHT = 0x39C4A0;
 constexpr uint32_t BOSS0_BOUNDS = 0x3A10EF;
@@ -144,6 +184,50 @@ void rect_cull_y(tlcs900_device &cpu, void *)
 		cpu.m_sr.b.l &= static_cast<uint8_t>(~FLAG_C);
 }
 
+// How far the view reaches beyond the screen on each side.
+int margin_left()
+{
+	return s_arena ? s_arena_left : s_margin;
+}
+
+int margin_right()
+{
+	return s_arena ? s_arena_right : s_margin;
+}
+
+void hull_left(tlcs900_device &cpu, void *)
+{
+	if (s_margin == 0)
+		return;
+	// JR LE is taken on Z or S != V: set Z to take it, clear all three not to.
+	const int x = static_cast<int16_t>(*cpu.get_reg16_current(REG_WA));
+	cpu.m_sr.b.l &= static_cast<uint8_t>(~(FLAG_S | FLAG_V | FLAG_Z));
+	if (x <= -margin_left())
+		cpu.m_sr.b.l |= FLAG_Z;
+}
+
+void hull_right(tlcs900_device &cpu, void *)
+{
+	if (s_margin == 0)
+		return;
+	// JR LT is taken on S != V: set S (V clear) to take it, clear both not to.
+	const int x = static_cast<int16_t>(*cpu.get_reg16_current(REG_WA));
+	cpu.m_sr.b.l &= static_cast<uint8_t>(~(FLAG_S | FLAG_V | FLAG_Z));
+	if (x < 160 + margin_right())
+		cpu.m_sr.b.l |= FLAG_S;
+}
+
+void actor_exit(tlcs900_device &cpu, void *)
+{
+	if (s_margin == 0)
+		return;
+	// RET LT is taken on S != V: set S (V clear) to go on, clear both not to.
+	const int x = static_cast<int16_t>(*cpu.get_reg16_current(REG_IX));
+	cpu.m_sr.b.l &= static_cast<uint8_t>(~(FLAG_S | FLAG_V | FLAG_Z));
+	if (x < ACTOR_EXIT_X + 2 * s_margin)
+		cpu.m_sr.b.l |= FLAG_S;
+}
+
 void bird_wake(tlcs900_device &cpu, void *)
 {
 	if (s_margin == 0)
@@ -167,6 +251,18 @@ void player_right(tlcs900_device &cpu, void *)
 {
 	if (s_arena)
 		*cpu.get_reg16_current(REG_BC) = static_cast<uint16_t>(PLAYER_RIGHT_BOUND + s_arena_right);
+}
+
+void space_player_left(tlcs900_device &cpu, void *)
+{
+	if (s_arena)
+		*cpu.get_reg16_current(REG_WA) -= static_cast<uint16_t>(s_arena_left);
+}
+
+void space_player_right(tlcs900_device &cpu, void *)
+{
+	if (s_arena)
+		*cpu.get_reg16_current(REG_WA) += static_cast<uint16_t>(s_arena_right);
 }
 
 void boss0_bounds(tlcs900_device &cpu, void *)
@@ -199,9 +295,14 @@ void set_wide_sprite_margin(int extra)
 		tlcs900_hook::add(SPRITE_CULL_Y_2, sprite_cull_y);
 		tlcs900_hook::add(RECT_CULL_Y, rect_cull_y);
 		tlcs900_hook::add(BIRD_WAKE, bird_wake);
+		tlcs900_hook::add(ACTOR_EXIT, actor_exit);
+		tlcs900_hook::add(HULL_LEFT, hull_left);
+		tlcs900_hook::add(HULL_RIGHT, hull_right);
 		tlcs900_hook::add(PLAYER_LEFT, player_left);
 		tlcs900_hook::add(PLAYER_RIGHT, player_right);
 		tlcs900_hook::add(BOSS0_BOUNDS, boss0_bounds);
+		tlcs900_hook::add(SPACE_PLAYER_LEFT, space_player_left);
+		tlcs900_hook::add(SPACE_PLAYER_RIGHT, space_player_right);
 		s_installed = true;
 	}
 	if (s_margin == 0)

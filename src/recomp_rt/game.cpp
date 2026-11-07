@@ -24,7 +24,14 @@ struct Stop
 {
 };
 
+thread_local bool t_game_thread = false;
+
 } // namespace
+
+bool on_recompiled_game_thread()
+{
+	return t_game_thread;
+}
 
 struct RecompiledGame::Impl
 {
@@ -43,6 +50,7 @@ struct RecompiledGame::Impl
 
 	void body()
 	{
+		t_game_thread = true;
 		to_game.acquire();
 		if (!stop)
 		{

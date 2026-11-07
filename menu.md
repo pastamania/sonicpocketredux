@@ -12,3 +12,8 @@ This should contain
 - The original Normal / Easy mode toggle 
 
 - Vsync on and off. 
+
+---
+Done so far: the drop dash on/off, the frame rate (60, 90, 120 Hz) and the aspect ratio (16:9, 16:10, original) are rows of the
+game's own Game Option screen, in place of Auto Power Off and Exit (see docs/notes/options-screen.md); the Normal / Easy
+toggle was already there. Still the keys / command line only: the full screen modes (F11), vsync, scale mode (F8), and 4:3.

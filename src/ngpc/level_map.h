@@ -51,9 +51,20 @@ constexpr uint32_t TITLE_CARD_FIRST = 0x3CF75A;
 constexpr uint32_t TITLE_CARD_END = 0x3CFA96;
 
 // The code of the first and second zone's bosses (Boss0_Load on to Boss1's last
-// routine); a task running it is a boss, or a part of one, with its x at +0x12.
+// routine) and of the sixth's (Boss5_Load to Boss6_Load, level 11); a task running
+// it is a boss, or a part of one, with its x at +0x12. The sixth zone's body is a
+// block of plane 1's tiles like theirs, scrolled to bring it in from the right of
+// the screen, and its task's x is the block's middle all the way (checked from its
+// coming in to its end).
 constexpr uint32_t BOSS_CODE_FIRST = 0x3A0EDA;
 constexpr uint32_t BOSS_CODE_END = 0x3A2000;
+constexpr uint32_t BOSS5_CODE_FIRST = 0x3A3486;
+constexpr uint32_t BOSS5_CODE_END = 0x3A3F4C;
+// Now and then one of these tasks keeps a place on the screen, not in the level, in
+// the words where its x is (the sixth's body does, for a few ticks, with 124 and 27
+// for instance): less the camera's, that is thousands of pixels away, and is not
+// taken as a place. Anything this far from the screen is left out.
+constexpr int BOSS_X_LIMIT = 1024;
 constexpr int BOSS_TASKS = 8;
 constexpr int CARD_TASKS = 4;
 // The player's task (x at +0x12), which in the fifth zone's flight (level 8) is
@@ -66,6 +77,40 @@ constexpr uint32_t PLAYER_TASK = 0x6708;
 constexpr uint32_t ACT_CLEAR_FIRST = 0x3CE60A;
 constexpr uint32_t ACT_CLEAR_END = 0x3CE7F7;
 
+// The endings and the credits are tasks of these parts of the cartridge: DoBadEnding
+// and DoGoodEnding, which stay until the credits are done (0x3D6E6E to DoDelayedBGM,
+// which the levels use as well and is not one), and the scenes they start and the
+// credits (DoCredits, from 0x3E6AD1) up to the language error screen. They draw their
+// pictures in the same rings as the level, for 160 pixels, with no level behind them.
+constexpr uint32_t ENDING_FIRST = 0x3D6E6E;
+constexpr uint32_t ENDING_END = 0x3D6F79;
+constexpr uint32_t ENDING_SCENES_FIRST = 0x3E669A;
+constexpr uint32_t ENDING_SCENES_END = 0x3E780E;
+// The last fight's end: when Robotnik's machine is beaten his pod comes out and flies in
+// front of the player, and a hit on it ends the level. On that hit the pod's task goes to
+// this routine (the one that sends it off, with its pieces falling) and the game goes on,
+// by the act clear and a short walk across the level and a fade, to the ending's first
+// picture. All of it is staged for the screen's 160 pixels, so from the hit the picture is
+// the screen centred between black bars (LevelRam::finale) until the next level starts.
+constexpr uint32_t LAST_BOSS_POD_HIT = 0x3E540B;
+constexpr int FINAL_LEVEL = 12;
+// The last bonus level, Chaotic Space (13): Super Sonic against Robotnik's machine in orbit, reached by
+// the level select once the game is cleared. It has no level behind it (its header pointer is 0 and the
+// camera has no range): the two scroll planes are pictures of the planet and the stars, 256 pixels round,
+// which the game scrolls with the camera. Its own code, the fight's controller and the machine's parts
+// (b7_ and CS_ in the disassembly), is a run of the cartridge that its tasks keep to.
+constexpr int CHAOTIC_SPACE_LEVEL = 13;
+constexpr uint32_t CHAOTIC_SPACE_FIRST = 0x3D2656;
+constexpr uint32_t CHAOTIC_SPACE_END = 0x3D3000;
+// The machine's body is a block of plane 1's tiles that its main task moves by the plane's scroll; the task
+// keeps the block's middle in its x (+0x12), a world x (the machine stays at 176 while the camera pans), and
+// the screen's x is that less the camera's pan (0x67DC: 0 to 160; 0x506C is another counter in this level).
+// The states of that task, from the machine's entrance (it comes in from the left, to 208, then 176), the fight
+// (0x3D275B) and its end: when the machine is beaten it goes through these in turn.
+constexpr uint32_t CHAOTIC_SPACE_PAN = 0x67DC;
+constexpr uint32_t CHAOTIC_SPACE_MACHINE[] = { 0x3D26B5, 0x3D2707, 0x3D2722, 0x3D2736, 0x3D275B,
+		0x3D2830, 0x3D285A, 0x3D287D, 0x3D28D0, 0x3D2907 };
+
 // What the game holds in RAM that locates the level, read at the end of a frame.
 struct LevelRam
 {
@@ -74,6 +119,15 @@ struct LevelRam
 	int camera_x_start = 0, camera_x_end = 0;
 	bool title_card = false;        // the zone's title card is showing
 	bool act_clear = false;         // the act clear's text is on screen
+	bool ending = false;            // the finale, an ending or the credits are on
+	// The last fight's pod has been hit (see LAST_BOSS_POD_HIT): from then until the next
+	// level starts. Unlike the rest it is not a state of one frame: read_level_ram is given
+	// the last frame's value to carry it through the gaps between the tasks that show it.
+	bool finale = false;
+	// Chaotic Space's fight, or its title card, is on: the level number is 13 and a task of the
+	// level's own code (or of the card) is running, so that the title screen and the menus the
+	// game goes back to, which keep the number, are not taken for it.
+	bool space = false;
 	// The records of the card's tasks, which own the sprites of the card (as
 	// opposed to the level's own: the player, the HUD).
 	uint32_t card_owner[CARD_TASKS] = {};
@@ -95,7 +149,8 @@ struct LevelRam
 // whole width. Levels, by their numbers: 0, 2, 4, 6 and 10 are act 1s; 1, 3, 7, 9
 // and 11 end in the boss of a zone and 12 is the last fight. The third zone's
 // boss (5) is at the end of its level and its camera is not locked, nor is
-// level 8's: they are left as the game has them.
+// level 8's: they are left as the game has them. Chaotic Space (13), whose player is kept to
+// the screen throughout, is one as well, though it has no level data to show beyond it.
 bool wide_arena(const LevelRam &ram);
 
 // Whether the level is one of those, locked or not.
@@ -112,8 +167,9 @@ bool plane1_block_level(const LevelRam &ram);
 
 class Machine;
 
-// Reads those from the machine's RAM.
-LevelRam read_level_ram(Machine &machine);
+// Reads those from the machine's RAM. `finale_before` is the last call's LevelRam::finale
+// (false for the first call).
+LevelRam read_level_ram(Machine &machine, bool finale_before = false);
 
 class LevelMap
 {
@@ -148,6 +204,16 @@ private:
 	// The same, for what a wide view shows beyond the level's data (see
 	// m_last_column): `extend` holds the level's last column on.
 	uint16_t scene_entry(const Header &header, int plane, int column, int row, bool extend) const;
+
+	// A scene for Chaotic Space: no tiles, the planes from the hardware's rings (WideScene::ring).
+	bool build_space(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_render::WideScene &scene);
+	// A block of plane 1's tiles that the game moves by scrolling the plane (a boss's body): sets the
+	// scene to draw one lap of the ring, the one the block is in. `follow_player` also takes the
+	// player's task as an anchor for the lap (the fifth zone's flight).
+	void p1_block_window(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_render::WideScene &scene,
+			bool follow_player);
+	// The title card's part of a scene (WideScene::centred, card_hold).
+	void card_state(const k2ge_render::Frame &frame, const LevelRam &ram, k2ge_render::WideScene &scene);
 
 	const std::vector<uint8_t> &m_rom;
 	uint32_t m_header = 0;

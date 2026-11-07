@@ -49,3 +49,8 @@ The next call, `update_pause_menu` at `0x23BD6F`, consumes new Option presses
 from `controller_state_pressed` and dispatches a pause-state jump table. This
 is a pause overlay in the main loop rather than the game's top-level mode
 dispatcher.
+
+Its state is the byte at `0x49EB`: `0xFF` while the game runs, 0 from the press that opens the
+overlay until the one that closes it (the other values the jump table has, 1 to 3, were not seen).
+The banner appears two frames after it goes to 0 and is gone a frame after it is `0xFF` again. It is
+drawn by scrolling plane 2 by line; see [level-map.md](level-map.md#the-pause-banner).

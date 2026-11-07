@@ -16,6 +16,11 @@ namespace k2ge_render {
 constexpr int LINES = 152;
 constexpr int MAX_WIDTH = 320;     // the widest view (a scroll plane's own ring is 256 pixels)
 constexpr int SPRITES = 64;
+// A picture between two game ticks places the level's scroll planes and the sprites to a
+// fraction of a pixel, SUBPIXELS to the pixel (see LineRegs::sub1x and SpriteShift::sub):
+// at whole pixels every refresh of a display would move the level by a different whole
+// number of pixels (1, 2, 2, 1, 2...) and a fast scroll would look uneven.
+constexpr int SUBPIXELS = 4;
 
 // Registers the picture depends on that a game may change between lines.
 struct LineRegs
@@ -31,9 +36,18 @@ struct LineRegs
 	// Set by the host for a wide view (see WideScene): the world x, not
 	// wrapped at 256, of screen x 0 for each scroll plane on this line.
 	int wx1 = 0, wx2 = 0;
+	// How many 1/SUBPIXELS of a pixel further left than s1x / s2x (and wx1 / wx2) the
+	// plane is drawn: 0..SUBPIXELS-1. Zero is the picture as the registers say.
+	uint8_t sub1x = 0, sub2x = 0;
 	// Set by the host for a wide scene with a plane 1 window (see WideScene):
 	// the screen x where this line's window of 256 pixels of plane 1 starts.
 	int p1_lo = 0;
+	// Set by the host for a wide scene: the game has scrolled plane 2 on this line to a picture
+	// of its own, over the level (the pause banner: three of the plane's ring rows, shown in the
+	// middle of the screen for the lines they cover). The level's tiles are not what the plane
+	// shows there, so the line is drawn from the hardware's ring, centred in the view, with the
+	// picture's edge pixels carried out to the view's edges (draw_band_plane).
+	bool band = false;
 };
 
 using Palette = std::array<uint8_t, 0x200>;
@@ -67,6 +81,12 @@ struct WideScene
 {
 	bool active = false;
 	bool plane1 = false;           // plane 1 scrolls with plane 2, so it too comes from the scene
+	// A level with no tile maps behind it (Chaotic Space, see LevelRam::space): both planes are
+	// drawn from the hardware's own 256-pixel rings, all the way round, which the game fills
+	// with a picture that wraps (the planet and the stars), and the camera's range is not
+	// limited. A view wider than 256 pixels shows the ring's first columns again at its far end.
+	// The scene then holds only what a screen shown over such a level needs (centred, card_hold).
+	bool ring = false;
 	// A screen laid out for 160 pixels sits over the level (the zone's title
 	// card). The level is placed as it will be once the card is gone, and the
 	// card, its plane 1 and the sprites of its tasks, goes in the middle of the
@@ -82,6 +102,11 @@ struct WideScene
 	// The camera is locked in an act's end or a boss arena (see wide_arena):
 	// the view is centred on the screen and shows the level beyond it.
 	bool arena = false;
+	// The act clear (the "Sonic got through" screen) is up: a screen laid out for
+	// 160 pixels, with its text, its sign and the player in a pose, over the level.
+	// The view is centred on the screen, as in an arena, wherever the camera has
+	// stopped, so that it sits in the middle and not at one end of the picture.
+	bool act_clear = false;
 	// Plane 1 is drawn from the hardware's 256-pixel ring and holds a block (a
 	// boss: the game moves it by scrolling the plane). A view wider than the
 	// screen sees the ring wrap: the part of the block that is beyond one edge
@@ -151,6 +176,8 @@ struct SpriteShift
 
 	int dx[SPRITES] = {};
 	int dy[SPRITES] = {};
+	// How many 1/SUBPIXELS of a pixel further right than dx the sprite is drawn.
+	uint8_t sub[SPRITES] = {};
 	// The screen x, not wrapped at 256, of the object a sprite belongs to, or
 	// NO_REF. A sprite's own x is 8 bits, which is ambiguous in a view wider
 	// than 256 pixels; with this the sprite is placed at the position nearest

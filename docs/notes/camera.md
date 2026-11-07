@@ -95,6 +95,41 @@ maps with the game's own sprite list, and not for the title card or the act clea
 whose planes are pictures fixed to the screen. The original aspect is as the machine
 drew it, and so is `--no-smoothing`.
 
+## Sub-pixel scrolling
+
+While Sonic runs the level moves 7 to 9 pixels a game tick (30 a second), and a presented
+picture shows it part of the way through the tick. Placed at whole pixels, the picture of one
+refresh moves by a different whole number of pixels from the next: at 144 Hz a steady run is
+1, 2, 2, 1, 2 pixels a refresh, at 120 Hz 2, 2, 2, 1 when the tick is 7 pixels and 2, 2, 2, 3 when
+it is 9, and 3, 4, 3, 4 at 60 Hz. A slow drift only ever steps 0 or 1, which is why it looked
+fine and a run did not. Measured on the recording of the first zone (3136 frames, 8 stretches of
+steady running, 790 frames), the spread of the step between one refresh and the next, as a share of
+the step, with the glide placed to whole pixels and to a quarter:
+
+| pictures a second | whole pixels | quarter pixel |
+| ---: | ---: | ---: |
+| 60 | 13% | 10% |
+| 90 | 20% | 11% |
+| 120 | 19% | 10% |
+
+(At 144: 31% and 12%.) What is left is the game's own steps: Sonic moves whole pixels a tick, so
+the camera's step goes 7, 8, 8, 9 and the straight glide changes speed at each tick; the camera
+also changes step by 2 pixels or more between ticks 69 times in that recording (1204 ticks).
+
+`Interpolator::render` therefore places the level's scroll planes (`LineRegs::sub1x`, `sub2x`, to
+1/`SUBPIXELS` of a pixel, 4) and the sprites (`SpriteShift::sub`) to a fraction of a pixel, in every
+aspect. `render_line_subpixels` draws such a line with `SUBPIXELS` samples to a pixel, each plane at
+whole pixels a column wider than the view and then laid into the samples that many quarters to the
+left, each sprite pixel into `SUBPIXELS` samples that many quarters to the right, and every output
+pixel is the average of its samples: a layer a fraction of a pixel across shows its edge pixels
+blended, and one on a whole pixel is exactly what `render_line` draws (so a line with nothing
+fractional, the picture as the game drew it and `--check-render` are unchanged). A pixel at a
+fraction f is the blend of the whole-pixel pictures either side of it, (4-f)/4 of one and f/4 of the
+other, which is how it was tested (90 cases of the first zone, 160 and 270 wide, plane 1, plane 2
+and sprites: no difference). The extra work is 0.08 ms a picture. `--no-subpixel` (`sonic-pocket`
+and `ngpc-run`) places everything at whole pixels. Vertically the easing's smoothed scroll is still
+rounded to whole pixels.
+
 ## Runtime validation
 
 The BizHawk player tracer records all camera fields. A directed capture remains

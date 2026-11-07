@@ -22,6 +22,22 @@ int wrapped(int d)
 	return d >= 128 ? d - 256 : d;
 }
 
+int floor_div(int a, int b)
+{
+	return a >= 0 ? a / b : -((-a + b - 1) / b);
+}
+
+// The pause banner is three of plane 2's ring rows, which the game shows in the middle of the
+// level by scrolling the plane to them (and swapping the planes' priority) for the lines they
+// cover: 24 lines, on which plane 2's scroll is not the level's (the first line's). Plane 2 is
+// not the level there, so they are marked as band lines (LineRegs::band).
+void find_band(Frame &frame)
+{
+	const LineRegs &top = frame.line[0];
+	for (int line = 1; line < LINES; line++)
+		frame.line[line].band = frame.line[line].s2x != top.s2x || frame.line[line].s2y != top.s2y;
+}
+
 } // namespace
 
 
@@ -209,9 +225,12 @@ void Interpolator::push(const Frame &frame, const ngpc::SpriteTable *sprites, co
 	if (wide && wide->active)
 	{
 		m_wide = *wide;
+		find_band(m_frame);
 		for (int line = 0; line < LINES; line++)
 		{
-			m_frame.line[line].wx2 = wide->world_x + wrapped(frame.line[line].s2x - frame.line[0].s2x);
+			// (A band line's world x is the level's: the clipping at the level's ends is the level's.)
+			m_frame.line[line].wx2 = wide->world_x + (m_frame.line[line].band ? 0 :
+					wrapped(frame.line[line].s2x - frame.line[0].s2x));
 			m_frame.line[line].wx1 = wide->world_x + wrapped(frame.line[line].s1x - frame.line[0].s2x);
 			// The window of plane 1 moves with the plane's scroll, and with the
 			// scroll of its own row if the rows are windowed one by one.
@@ -272,7 +291,7 @@ void Interpolator::push(const Frame &frame, const ngpc::SpriteTable *sprites, co
 	// Easing needs the level's maps (the rows it uncovers) and the game's own
 	// account of its sprites (to move them with the level), and is not for a
 	// title card or the act clear, whose planes are screen-fixed pictures.
-	ease_step(frame, wide && wide->active && sprites && !wide->centred && !wide->p1_rows);
+	ease_step(frame, wide && wide->active && sprites && !wide->centred && !wide->p1_rows && !wide->ring);
 }
 
 
@@ -333,7 +352,10 @@ int Interpolator::ease_at(double s) const
 void Interpolator::scenery_shift(double s, int &dx, int &dy) const
 {
 	const double t = static_cast<double>(m_now) + s;
-	dx = static_cast<int>(std::lround(m_planes[2].trailing(0, t)));
+	// The whole pixels of the level's displacement (the rest, to 1/SUBPIXELS, is in the
+	// pictures; see sprite_shift, whose dx is the same for a thing that moves with the level).
+	dx = m_subpixel ? floor_div(static_cast<int>(std::lround(m_planes[2].trailing(0, t) * SUBPIXELS)), SUBPIXELS)
+			: static_cast<int>(std::lround(m_planes[2].trailing(0, t)));
 	dy = static_cast<int>(std::lround(m_planes[3].trailing(0, t)));
 }
 
@@ -355,7 +377,15 @@ SpriteShift Interpolator::sprite_shift(double s, int left, int right, bool wide,
 			shift.card[i] = std::find(m_wide.card_owner, m_wide.card_owner + m_wide.card_owner_count, object.owner) !=
 					m_wide.card_owner + m_wide.card_owner_count;
 		const double behind = 1.0 - std::clamp((t - object.t_to) / object.len, 0.0, 1.0);
-		shift.dx[i] = -static_cast<int>(std::lround(behind * object.dx));
+		if (m_subpixel)
+		{
+			// To 1/SUBPIXELS of a pixel: the whole pixels in dx, the rest to the right of it.
+			const int fine = -static_cast<int>(std::lround(behind * object.dx * SUBPIXELS));
+			shift.dx[i] = floor_div(fine, SUBPIXELS);
+			shift.sub[i] = static_cast<uint8_t>(fine - shift.dx[i] * SUBPIXELS);
+		}
+		else
+			shift.dx[i] = -static_cast<int>(std::lround(behind * object.dx));
 		shift.dy[i] = -static_cast<int>(std::lround(behind * object.dy));
 		if (wide)
 		{
@@ -381,14 +411,27 @@ void Interpolator::render(double s, uint32_t *out) const
 	const double t = static_cast<double>(m_now) + s;
 
 	std::array<LineRegs, LINES> regs = m_frame.line;
+	// A scroll x at this moment, to 1/SUBPIXELS of a pixel: the whole pixels it returns, and
+	// the rest (to the left of them) in `sub`.
+	auto placed = [&](const Track &track, int value, int line, uint8_t &sub) {
+		if (!m_subpixel)
+		{
+			sub = 0;
+			return value - static_cast<int>(std::lround(track.trailing(line, t)));
+		}
+		const int fine = value * SUBPIXELS - static_cast<int>(std::lround(track.trailing(line, t) * SUBPIXELS));
+		const int whole = floor_div(fine, SUBPIXELS);
+		sub = static_cast<uint8_t>(fine - whole * SUBPIXELS);
+		return whole;
+	};
 	for (int line = 0; line < LINES; line++)
 	{
 		auto shifted = [&](const Track &track, int value) {
 			return static_cast<uint8_t>((value - static_cast<int>(std::lround(track.trailing(line, t)))) & 0xff);
 		};
-		regs[line].s1x = shifted(m_planes[0], m_frame.line[line].s1x);
+		regs[line].s1x = static_cast<uint8_t>(placed(m_planes[0], m_frame.line[line].s1x, line, regs[line].sub1x) & 0xff);
 		regs[line].s1y = shifted(m_planes[1], m_frame.line[line].s1y);
-		regs[line].s2x = shifted(m_planes[2], m_frame.line[line].s2x);
+		regs[line].s2x = static_cast<uint8_t>(placed(m_planes[2], m_frame.line[line].s2x, line, regs[line].sub2x) & 0xff);
 		regs[line].s2y = shifted(m_planes[3], m_frame.line[line].s2y);
 	}
 
@@ -401,11 +444,22 @@ void Interpolator::render(double s, uint32_t *out) const
 	{
 		for (int line = 0; line < LINES; line++)
 		{
-			regs[line].wx2 = m_frame.line[line].wx2 - static_cast<int>(std::lround(m_planes[2].trailing(line, t)));
-			regs[line].wx1 = m_frame.line[line].wx1 - static_cast<int>(std::lround(m_planes[0].trailing(line, t)));
+			uint8_t sub = 0;   // the same as the registers', which the planes' world x differs from by whole pixels
+			regs[line].wx2 = placed(m_planes[2], m_frame.line[line].wx2, line, sub);
+			regs[line].wx1 = placed(m_planes[0], m_frame.line[line].wx1, line, sub);
 			regs[line].p1_lo = m_frame.line[line].p1_lo == WideScene::HIDDEN_ROW ? WideScene::HIDDEN_ROW :
 					m_frame.line[line].p1_lo + static_cast<int>(std::lround(m_planes[0].trailing(line, t)));
 		}
+		// A band line (the pause banner) is a picture fixed to the screen: it keeps the game's
+		// scroll, with no glide, and the level's world x (for the clipping at the level's ends).
+		for (int line = 0; line < LINES; line++)
+			if (regs[line].band)
+			{
+				regs[line].s2x = m_frame.line[line].s2x;
+				regs[line].s2y = m_frame.line[line].s2y;
+				regs[line].sub2x = 0;
+				regs[line].wx2 = regs[0].wx2;
+			}
 		wide_placement(regs[0].wx2, left, right);
 		view.origin = -left;
 		view.card_origin = -((m_view.width - 160) / 2);
@@ -420,7 +474,8 @@ void Interpolator::render(double s, uint32_t *out) const
 		const bool plane1_moves = m_wide.plane1 || (m_wide.p1_window && !m_wide.p1_rows);
 		for (int line = 0; line < LINES; line++)
 		{
-			regs[line].s2y = static_cast<uint8_t>((regs[line].s2y + ease) & 0xff);
+			if (!regs[line].band)
+				regs[line].s2y = static_cast<uint8_t>((regs[line].s2y + ease) & 0xff);
 			if (plane1_moves)
 				regs[line].s1y = static_cast<uint8_t>((regs[line].s1y + ease) & 0xff);
 		}
@@ -442,7 +497,7 @@ void Interpolator::wide_placement(int world_x, int &left, int &right) const
 	const int room_right = std::max(0, m_wide.max_x - (world_x + 160));
 	const int lowest = std::max(0, extra - room_right), highest = std::min(extra, room_left);
 	left = lowest <= highest ? std::clamp(extra / 2, lowest, highest) : extra / 2;
-	if (m_wide.arena)
+	if (m_wide.arena || m_wide.act_clear)
 		left = extra / 2;
 	right = extra - left;
 }
