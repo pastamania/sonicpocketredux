@@ -1,6 +1,12 @@
 ![Sonic Pocket](docs/images/banner.jpg)
 
-# Sonic Pocket
+# Sonic Pocket Adventure Recompilation Redux
+
+This is an upgraded version of GlitchKiss's Sonic Pocket recompliation from https://github.com/GLITCHKISS/Sonic-Pocket. 
+
+It adds 16:9/16:10 support, as well as 60/90/120hz, as well as the dropdash from more recent games.
+
+--
 
 A static recompilation of *Sonic the Hedgehog: Pocket Adventure* (Neo Geo
 Pocket Color) to native C++.
@@ -24,6 +30,11 @@ video chip, sound chips, timers, interrupts, save flash and BIOS.
 - **Nearly all native.** All 2,771 known routines are recompiled. Only the
   flash-save routine the game copies into RAM and the BIOS entry points run
   through the interpreter.
+
+## Known Bugs
+- In the final level, Eggman vanishes before reaching the right hand side in widescreen mode.
+
+
 
 The generated code is correct but machine-shaped: every instruction calls the
 CPU core's handler for it. Next steps are lifting it to plain, readable C++
