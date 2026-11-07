@@ -351,6 +351,7 @@ int main(int argc, char **argv)
 			{
 				const int extra = k2ge_render::aspect_width(aspect) - 160;
 				ngpc::set_wide_arena(ngpc::wide_arena(level_ram), extra / 2, extra - extra / 2);
+				ngpc::track_wide_view(active ? wide_scene.get() : nullptr, extra);
 			}
 			if (check_wide && active)
 			{

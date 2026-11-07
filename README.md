@@ -1,12 +1,13 @@
-![Sonic Pocket](docs/images/banner.jpg)
-
 # Sonic Pocket Adventure Recompilation Redux
 
 This is an upgraded version of GlitchKiss's Sonic Pocket recompliation from https://github.com/GLITCHKISS/Sonic-Pocket. 
 
 It adds 16:9/16:10 support, as well as 60/90/120hz, as well as the dropdash from more recent games.
 
+- Is this AI Generated?
+Oooooh yeah. A ton of Claude'ing going on here. If someone ever does this properly, play that instead. 
 --
+
 
 A static recompilation of *Sonic the Hedgehog: Pocket Adventure* (Neo Geo
 Pocket Color) to native C++.
@@ -327,9 +328,8 @@ To compare the machine against BizHawk, capture a reference with
 
 This repository contains no ROM data, extracted assets, BIOS or generated
 code. The recompiled C++ is produced at build time from your own cartridge.
-Committed files are original code ([MIT licence](LICENSE)), MIT/BSD-licensed third-party
-code with its notices ([`NOTICE.txt`](NOTICE.txt)), and facts about the ROM such as routine
-addresses.
+Committed files are original code, MIT/BSD-licensed third-party code with its notices
+([`NOTICE.txt`](NOTICE.txt)), and facts about the ROM such as routine addresses.
 A program built with `SPA_ROM` contains the game, translated, and is not to be handed out;
 the one built with `SPA_PLAYER` is.
 

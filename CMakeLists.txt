@@ -46,6 +46,9 @@ enable_testing()
 add_executable(cartridge-test tests/cartridge_test.cpp)
 target_link_libraries(cartridge-test PRIVATE ngpc)
 add_test(NAME cartridge COMMAND cartridge-test)
+add_executable(wide-view-test tests/wide_view_test.cpp)
+target_link_libraries(wide-view-test PRIVATE ngpc)
+add_test(NAME wide_view COMMAND wide-view-test)
 
 # The static recompiler itself.
 add_executable(spa-recomp
@@ -59,6 +62,7 @@ if(MSVC)
     target_compile_options(ngpc PRIVATE /W4 /permissive-)
     target_compile_options(ngpc-run PRIVATE /W4 /permissive-)
     target_compile_options(cartridge-test PRIVATE /W4 /permissive-)
+    target_compile_options(wide-view-test PRIVATE /W4 /permissive-)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -153,11 +157,15 @@ if(SPA_ROM OR SPA_PLAYER)
             $<TARGET_FILE:SDL3::SDL3>
             $<TARGET_FILE_DIR:sonic-pocket>
     )
-    # The licences go beside the program, and follow any edit to them.
+    # The licences go beside the program, and follow any edit to them. This runs before the
+    # program is linked, so its folder (Release/ with Visual Studio) may not exist yet: it is made
+    # first, and the copy names the file, because copying a file to the name of a folder that is
+    # not there makes a file of that name, which then stops the build making the folder.
     add_custom_target(sonic-pocket-notice
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sonic-pocket>
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/NOTICE.txt
-            $<TARGET_FILE_DIR:sonic-pocket>
+            $<TARGET_FILE_DIR:sonic-pocket>/NOTICE.txt
         COMMENT "Copying NOTICE.txt"
         VERBATIM
     )

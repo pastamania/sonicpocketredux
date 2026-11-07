@@ -135,6 +135,15 @@ struct WideScene
 	uint16_t entry[2][32][WIDE_COLS];
 };
 
+// How a wide view splits its `extra` pixels (the picture's width less the screen's 160) between
+// the left and the right of the screen, with `world_x` the world x of the screen's first pixel.
+// They go evenly, except that the picture does not reach past the camera's range (the scene's
+// min_x and max_x): near an end of the level the extra goes to the other side, so at the very
+// start of a level all of it is to the right of the screen and at the very end to the left. In an
+// arena or the act clear's screen (the camera is locked) they are always even. If the range is
+// narrower than the picture the rest is left black.
+void wide_split(const WideScene &scene, int world_x, int extra, int &left, int &right);
+
 // Which part of the 256-pixel-wide picture is output. `origin` is the screen x
 // of output column 0 (0 for the stock 160-pixel view, -48 for a 256-pixel
 // view centred on it).

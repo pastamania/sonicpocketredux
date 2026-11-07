@@ -1077,6 +1077,7 @@ int main(int argc, char **argv)
 			// and the first boss to a little more: in a wide view they get its width.
 			const int extra = view.width - 160;
 			ngpc::set_wide_arena(wide_view && ngpc::wide_arena(level_ram), extra / 2, extra - extra / 2);
+			ngpc::track_wide_view(in_level ? wide_scene.get() : nullptr, extra);
 			interpolator.push(frame, sprite_trace.match(frame.vram.data() + 0x800), in_level ? wide_scene.get() : nullptr);
 			if (!smoothing)
 				interpolator.render_as_drawn(picture.data());

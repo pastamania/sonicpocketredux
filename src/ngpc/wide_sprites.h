@@ -13,6 +13,15 @@
 // so they work the same in interpreted and recompiled code. With no margin they
 // do nothing.
 //
+// A wide picture shares its extra width evenly either side of the screen, except near an end
+// of the level, where the picture does not reach past the camera's range and all of it lies on
+// one side: at the very start of a level up to twice the margin is to the right of the screen,
+// and at the very end to the left (see k2ge_render::wide_split). The three tests above are
+// widened by how far the view really reaches on each side (track_wide_view), not by the even
+// share, or an object there would not be drawn until it was well inside the picture: the first
+// speed booster of Aero Base (zone 5, act 2: level 9) stands 232 pixels from the screen's left
+// at the start, and did not appear until 224, about 45 pixels short of the picture's edge.
+//
 // Each of those tests is also widened vertically, by WIDE_EASE_MARGIN pixels
 // (k2ge_render.h), for the picture's vertical camera easing (see
 // Interpolator::ease_at): it uncovers that much above and below the screen.
@@ -38,11 +47,27 @@
 // Specific to this cartridge: the addresses belong to its code.
 #pragma once
 
+namespace k2ge_render {
+struct WideScene;
+}
+
 namespace ngpc {
 
 // `extra` is how many pixels beyond each side of the screen the view shows
 // (0 for the stock screen).
 void set_wide_sprite_margin(int extra);
+
+// Tells the sprite tests how far the view reaches beyond each side of the screen: `scene` is
+// what the host built from the frame it has just shown (null when it is not a level, which
+// the screen's centre is shown as it is), and `extra` is the picture's width less 160. Call it
+// after every frame, with the margin set; it does nothing without one. It follows the camera's
+// last step, so that the view the next tick's sprites will be shown in is covered whichever way
+// the camera goes.
+void track_wide_view(const k2ge_render::WideScene *scene, int extra);
+
+// How far the sprite tests now take the view to reach beyond the screen's left and right edges
+// (0, 0 with no margin). For tests.
+void wide_view_reach(int &left, int &right);
 
 // Where the camera is locked (see wide_arena in level_map.h) the game keeps
 // the player to the screen: his x on screen must stay between 12 and 148. The

@@ -327,6 +327,36 @@ Over the first zone the sprite table grows from 26.6 to 28.5 sprites on average
 (51 at most of 64). The interpreter and the recompiled game produce identical
 sprite tables with the hooks on (4500 frames of the second zone).
 
+**Where the extra width is.** The three tests are not widened by a fixed share on each
+side. The picture does not reach past the camera's range (`wide_split`, shared with the
+interpolator's placement), so at the very start of a level the whole extra width (110 pixels
+at 16:9) is to the right of the screen and the camera has to move 55 pixels before it is shared
+evenly, and at the very end of a level that is not an arena it is all to the left. With a
+fixed 55 pixels an object between 55 and 110 pixels beyond the screen's right edge was in the
+sprite list but had no hardware sprites, and appeared only when it came within 55: the first
+speed booster of Aero Base (zone 5, act 2: level 9; `ShowABSpeedBst`, `0x3D0FD6`, drawn through
+`AddSprObj_Plane2`; its sprites are 12 pixels left of its origin) stands 232 pixels from the
+screen's left at the start, and came in at 224, about 45 pixels from the picture's edge, with the
+level standing still behind it. Robotnik running across the last level's opening cutscene was
+cut off the same way (his sprites were not drawn until he was 55 beyond). `track_wide_view`
+(called after every frame with the scene the host built) gives the tests how far the view
+reaches on each side: at least the even share, and all of the extra on the side that has it.
+It looks as far each way as the camera moved in the last tick, because the sprites of the next
+tick are made for where the camera will be, not where it was. In the middle of a level the share
+is even and nothing changes; across the 13 levels' first 1000 frames at 16:9 the pictures differ
+from before only in the band beyond the screen's old reach, at the starts of levels 8, 9 and 12
+(rings, the booster, Robotnik) and at the end of level 5. Objects are created early enough:
+those that enter the list do so well beyond the view (x 255 to 279), so `LoadObjects`
+(`0x39F092`, a window of 64 pixels beyond the screen, in blocks of 192) and `IsOnScreen` did not
+need the same treatment.
+
+A sprite more than 255 pixels from the screen's left is stored in the table with its x
+wrapped, so in the machine's own picture it shows near the screen's left edge; the wide picture
+puts it where its object is (the sprite is taken to be nearest the object's origin, as above).
+`--check-centre` compares the wide picture's middle with the machine's own screen, so it counts
+frames of the last level's cutscene (about 20) where Robotnik's wrapped sprites show in the
+machine's picture and not in the wide one.
+
 **Bosses drawn on plane 1.** The bodies of the first, second and sixth zones' bosses are
 a block of plane 1's tiles (the first zone's 8x4 tiles, the second zone's pod 5x6, the
 sixth's machine 8 columns wide, in ring columns 0 to 7) that the game moves by scrolling

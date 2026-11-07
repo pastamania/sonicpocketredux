@@ -4,6 +4,9 @@
 #include "cpu/tlcs900/tlcs900.h"
 #include "ngpc/k2ge_render.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace ngpc {
 
 namespace {
@@ -113,7 +116,14 @@ constexpr uint32_t BOSS0_BOUNDS = 0x3A10EF;
 constexpr uint8_t REG_IX = 0xDC, REG_IY = 0xDD;
 constexpr int PLAYER_LEFT_BOUND = 0x0C, PLAYER_RIGHT_BOUND = 0x94;
 
-int s_margin = 0;
+constexpr int MAX_CAMERA_STEP = 64;   // a camera move of more than this in a tick is a jump, not a step
+
+int s_margin = 0;            // how far the view reaches beyond each side of the screen when it is shared evenly
+// How far it reaches this tick, each side, where the extra width is not shared evenly (near an end
+// of the level, see track_wide_view); 0 until the host says.
+int s_left = 0, s_right = 0;
+int s_last_x = 0, s_step = 0;   // the camera's world x at the last call, and how far it moves a tick
+bool s_have_x = false;
 bool s_installed = false;
 bool s_arena = false;
 int s_arena_left = 0, s_arena_right = 0;
@@ -129,19 +139,31 @@ void decide(tlcs900_device &cpu, bool keep)
 		cpu.m_sr.b.l &= static_cast<uint8_t>(~(FLAG_C | FLAG_Z));                 // UGT true: skip it
 }
 
-void cull(tlcs900_device &cpu, uint8_t reg, int limit, int margin)
+// How far the view reaches beyond the screen's left and right edges: at least the even share, and
+// all of the extra width on the side that has it near an end of the level.
+int reach_left()
+{
+	return std::max(s_margin, s_left);
+}
+
+int reach_right()
+{
+	return std::max(s_margin, s_right);
+}
+
+void cull(tlcs900_device &cpu, uint8_t reg, int limit, int margin_low, int margin_high)
 {
 	if (s_margin == 0)
 		return;
 	const int value = static_cast<int16_t>(*cpu.get_reg16_current(reg));
-	decide(cpu, value >= -margin && value <= limit + margin);
+	decide(cpu, value >= -margin_low && value <= limit + margin_high);
 }
 
 void sprite_cull(tlcs900_device &cpu, void *)
 {
 	// Sprites that touch the wider view: the margin, and the sprite's own
 	// width is already in the test (DE is x + 7, a sprite is 8 wide).
-	cull(cpu, REG_DE, SPRITE_LIMIT, s_margin);
+	cull(cpu, REG_DE, SPRITE_LIMIT, reach_left(), reach_right());
 }
 
 void object_cull(tlcs900_device &cpu, void *)
@@ -149,7 +171,7 @@ void object_cull(tlcs900_device &cpu, void *)
 	// Objects are placed by an origin that is not always their left edge, so
 	// this test, which is already 64 pixels loose, is given the same slack
 	// again.
-	cull(cpu, REG_BC, OBJECT_LIMIT, s_margin);
+	cull(cpu, REG_BC, OBJECT_LIMIT, reach_left(), reach_right());
 }
 
 void rect_cull(tlcs900_device &cpu, void *)
@@ -160,7 +182,7 @@ void rect_cull(tlcs900_device &cpu, void *)
 	// skips the object, so it is kept by setting carry.
 	const int value = static_cast<int16_t>(*cpu.get_reg16_current(REG_DE));
 	const int limit = static_cast<int16_t>(*cpu.get_reg16_current(REG_WA));
-	if (value >= -s_margin && value < limit + s_margin)
+	if (value >= -reach_left() && value < limit + reach_right())
 		cpu.m_sr.b.l |= FLAG_C;
 	else
 		cpu.m_sr.b.l &= static_cast<uint8_t>(~FLAG_C);
@@ -168,7 +190,7 @@ void rect_cull(tlcs900_device &cpu, void *)
 
 void sprite_cull_y(tlcs900_device &cpu, void *)
 {
-	cull(cpu, REG_DE, SPRITE_Y_LIMIT, k2ge_render::WIDE_EASE_MARGIN);
+	cull(cpu, REG_DE, SPRITE_Y_LIMIT, k2ge_render::WIDE_EASE_MARGIN, k2ge_render::WIDE_EASE_MARGIN);
 }
 
 void rect_cull_y(tlcs900_device &cpu, void *)
@@ -282,9 +304,45 @@ void set_wide_arena(bool active, int left, int right)
 	s_arena_right = right < 0 ? 0 : right;
 }
 
+void track_wide_view(const k2ge_render::WideScene *scene, int extra)
+{
+	if (s_margin == 0)
+		return;
+	if (!scene || !scene->active || extra <= 0)
+	{
+		s_left = s_right = 0;
+		s_have_x = false;
+		return;
+	}
+	// The camera moves on the game's ticks, every second frame: how far it moved at the last
+	// one says how far it may go before the next, whose sprites are made from where it will be
+	// (the view this call finds is the last frame's). A jump (a respawn) has no direction.
+	const int x = scene->world_x;
+	if (s_have_x && x != s_last_x)
+		s_step = std::abs(x - s_last_x) > MAX_CAMERA_STEP ? 0 : std::abs(x - s_last_x);
+	if (!s_have_x)
+		s_step = 0;
+	s_last_x = x;
+	s_have_x = true;
+	// Either way the camera may go, so the view reaches as far on each side as it can.
+	int left_ahead = 0, right_ahead = 0, left_behind = 0, right_behind = 0;
+	k2ge_render::wide_split(*scene, x + s_step, extra, left_ahead, right_ahead);
+	k2ge_render::wide_split(*scene, x - s_step, extra, left_behind, right_behind);
+	s_left = std::max(left_ahead, left_behind);
+	s_right = std::max(right_ahead, right_behind);
+}
+
+void wide_view_reach(int &left, int &right)
+{
+	left = s_margin ? reach_left() : 0;
+	right = s_margin ? reach_right() : 0;
+}
+
 void set_wide_sprite_margin(int extra)
 {
 	s_margin = extra < 0 ? 0 : extra;
+	if (s_margin == 0)
+		s_left = s_right = 0;
 	if (s_margin && !s_installed)
 	{
 		tlcs900_hook::add(SPRITE_CULL_1, sprite_cull);

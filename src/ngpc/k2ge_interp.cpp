@@ -486,20 +486,25 @@ void Interpolator::render(double s, uint32_t *out) const
 }
 
 
-void Interpolator::wide_placement(int world_x, int &left, int &right) const
+void wide_split(const WideScene &scene, int world_x, int extra, int &left, int &right)
 {
 	// The extra width is split either side of the screen, except that the
 	// picture does not reach past the camera's range: near an end of the
 	// level the extra goes to the other side. If the range is narrower than
 	// the picture (a locked camera) the rest is left black.
-	const int extra = m_view.width - 160;
-	const int room_left = std::max(0, world_x - m_wide.min_x);
-	const int room_right = std::max(0, m_wide.max_x - (world_x + 160));
+	const int room_left = std::max(0, world_x - scene.min_x);
+	const int room_right = std::max(0, scene.max_x - (world_x + 160));
 	const int lowest = std::max(0, extra - room_right), highest = std::min(extra, room_left);
 	left = lowest <= highest ? std::clamp(extra / 2, lowest, highest) : extra / 2;
-	if (m_wide.arena || m_wide.act_clear)
+	if (scene.arena || scene.act_clear)
 		left = extra / 2;
 	right = extra - left;
+}
+
+
+void Interpolator::wide_placement(int world_x, int &left, int &right) const
+{
+	wide_split(m_wide, world_x, m_view.width - 160, left, right);
 }
 
 
