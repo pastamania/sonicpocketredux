@@ -96,6 +96,7 @@
 #include "ngpc/sprite_trace.h"
 #include "ngpc/wide_levels.h"
 #include "ngpc/wide_sprites.h"
+#include "window_icon.h"
 #ifdef SPA_RECOMPILED
 #include "recomp_rt/game.h"
 #include "recomp_rt/runtime.h"
@@ -855,6 +856,16 @@ int main(int argc, char **argv)
 		std::fprintf(stderr, "cannot create window: %s\n", SDL_GetError());
 		return 1;
 	}
+#ifndef _WIN32
+	// The window's icon. On Windows the program's own icon resource (assets/icon/sonic-pocket.rc)
+	// serves, in every size it is wanted at; elsewhere there is no such resource to read.
+	if (SDL_Surface *icon = SDL_CreateSurfaceFrom(WINDOW_ICON_SIZE, WINDOW_ICON_SIZE, SDL_PIXELFORMAT_RGBA32,
+			const_cast<uint8_t *>(WINDOW_ICON_RGBA), WINDOW_ICON_SIZE * 4))
+	{
+		SDL_SetWindowIcon(window, icon);   // copies the pixels
+		SDL_DestroySurface(icon);
+	}
+#endif
 	// One picture per refresh of the monitor, unless a rate was asked for or
 	// the driver cannot wait for the refresh.
 	bool vsync = fps == 0;

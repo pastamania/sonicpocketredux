@@ -1,0 +1,3 @@
+// The program's icon on Windows (Explorer, taskbar, Alt+Tab). The id is 1 because SDL looks for
+// that one when it registers its window class. Made by tools/make_icon_header.py.
+1 ICON "sonic-pocket.ico"

@@ -80,6 +80,10 @@ cartridge ──► spa-recomp ──► generated C++ (one function per routine
   that what is handed out holds none of the game (see "Building a version to hand out").
 - `NOTICE.txt`: the licences of the third-party code in the program, which goes with every
   copy of it.
+- `assets/icon/` and `tools/make_icon_header.py`: the program's icon. `icon.png` is the source;
+  the script makes `sonic-pocket.ico` (compiled into the Windows exe by `sonic-pocket.rc`) and
+  `src/apps/window_icon.h` (the window icon on macOS and Linux). Run it again after changing
+  `icon.png` (needs ImageMagick).
 
 ## Building
 

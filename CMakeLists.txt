@@ -2,6 +2,16 @@ cmake_minimum_required(VERSION 3.25)
 
 project(SonicPocket LANGUAGES C CXX)
 
+if(MSVC)
+    # Link the C/C++ runtime into the program (and SDL) instead of depending on the Visual C++
+    # Redistributable, so it starts on a PC that doesn't have it (else: "VCRUNTIME140.dll not found").
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+if(WIN32)
+    enable_language(RC)   # the program's icon is a resource (assets/icon/sonic-pocket.rc)
+endif()
+
 # ---------------------------------------------------------------------------
 # NGPC machine: MAME-derived TLCS-900/H CPU, K2GE video and T6W28 sound, a Z80
 # core and a high-level BIOS. Builds without the cartridge.
@@ -142,6 +152,11 @@ if(SPA_ROM OR SPA_PLAYER)
     FetchContent_MakeAvailable(SDL3)
 
     add_executable(sonic-pocket src/apps/sonic_pocket.cpp)
+    if(WIN32)
+        # The icon in Explorer, the taskbar and the window. Elsewhere the window's icon is set
+        # from src/apps/window_icon.h when it opens.
+        target_sources(sonic-pocket PRIVATE assets/icon/sonic-pocket.rc)
+    endif()
     if(SPA_ROM)
         message(STATUS "sonic-pocket: with the game recompiled from ${SPA_ROM}")
         target_link_libraries(sonic-pocket PRIVATE spa_game SDL3::SDL3)
