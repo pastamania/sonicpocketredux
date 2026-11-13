@@ -2,7 +2,7 @@
 //
 //   sonic-pocket [cartridge] [--interpreter] [--japanese] [--scale N]
 //                [--aspect original|16:10|16:9] [--refresh auto|60|90|120] [--fps N]
-//                [--no-smoothing] [--no-subpixel]
+//                [--vsync auto|on|off] [--no-smoothing] [--no-subpixel]
 //                [--scale-mode sharp|integer|nearest] [--frame-delay auto|off|MS]
 //                [--audio-latency FRAMES] [--window WxH] [--drop-dash | --no-drop-dash]
 //                [--record input.txt | --replay input.txt] [--stats]
@@ -21,6 +21,11 @@
 // at whatever rate the monitor runs. --no-smoothing shows the game's own
 // frames instead. --fps N presents N pictures a second by the clock instead of
 // waiting for the monitor. --stats prints how evenly pictures were presented.
+// --vsync auto|on|off (remembered in the settings file as `vsync`): `on` always waits for the
+// monitor; `off` paces pictures by the clock at 60 a second; `auto` (the default) waits for the
+// monitor but, if during the first few seconds the pictures reach the screen well below the
+// display's rate or very unevenly (a virtual machine's display), changes to the clock for the rest
+// of the run.
 // --refresh auto|60|90|120 picks how many pictures a second to show (F6 steps through 60, 90 and
 // 120 and the choice is remembered; the default is 60): auto is one for every refresh of the
 // display, and a number shows that many by repeating a picture on the refreshes in between (60
@@ -257,6 +262,25 @@ int menu_refresh(int rate)
 }
 
 // "auto" is -1, "off" 0, a number of milliseconds to wait every frame.
+// --vsync and the `vsync` setting: 0 waits for the monitor unless it proves unreliable, 1 always
+// waits, 2 never does.
+bool parse_vsync(const std::string &text, int &mode)
+{
+	if (text == "auto") mode = 0;
+	else if (text == "on") mode = 1;
+	else if (text == "off") mode = 2;
+	else return false;
+	return true;
+}
+
+const char *vsync_name(int mode)
+{
+	return mode == 1 ? "on" : mode == 2 ? "off" : "auto";
+}
+
+// The pictures a second when they are paced by the clock rather than the monitor.
+constexpr int CLOCK_PACED_FPS = 60;
+
 bool parse_frame_delay(const std::string &text, double &milliseconds)
 {
 	if (text == "auto")
@@ -313,6 +337,7 @@ struct Settings
 	int audio_latency = AUDIO_LATENCY_DEFAULT;    // frames
 	bool drop_dash = false;
 	int refresh = 60;                             // see parse_refresh
+	int vsync = 0;                                // 0: auto, 1: on, 2: off (see parse_vsync)
 	fs::path rom;                                 // where the cartridge was last found
 };
 
@@ -338,6 +363,8 @@ Settings load_settings()
 			settings.drop_dash = value == "1" || value == "on";
 		else if (key == "refresh")
 			parse_refresh(value, settings.refresh);
+		else if (key == "vsync")
+			parse_vsync(value, settings.vsync);
 		else if (key == "rom")
 			settings.rom = cartridge::from_utf8(value.substr(0, value.find_last_not_of('\r') + 1));
 	}
@@ -358,6 +385,7 @@ void save_settings(const Settings &settings)
 	file << "audio-latency=" << settings.audio_latency << "\n";
 	file << "drop-dash=" << (settings.drop_dash ? "on" : "off") << "\n";
 	file << "refresh=" << refresh_name(settings.refresh) << "\n";
+	file << "vsync=" << vsync_name(settings.vsync) << "\n";
 	if (!settings.rom.empty())
 		file << "rom=" << cartridge::to_utf8(settings.rom) << "\n";
 }
@@ -621,6 +649,7 @@ int main(int argc, char **argv)
 	int audio_latency = stored.audio_latency;
 	bool drop_dash = stored.drop_dash;
 	int refresh = stored.refresh;   // pictures a second to show, 0: every refresh of the display
+	int vsync_mode = stored.vsync;  // see parse_vsync
 	int window_width = 0, window_height = 0;   // 0: from --scale
 	// Fullscreen on opening: --fullscreen / --windowed say which (-1: neither was given, so
 	// fullscreen unless --window or --screenshot asked for a window of a known size).
@@ -677,6 +706,14 @@ int main(int argc, char **argv)
 				return 2;
 			}
 		}
+		else if (arg == "--vsync" && i + 1 < argc)
+		{
+			if (!parse_vsync(argv[++i], vsync_mode))
+			{
+				std::fprintf(stderr, "unknown vsync mode %s (auto, on or off)\n", argv[i]);
+				return 2;
+			}
+		}
 		else if (arg == "--drop-dash") drop_dash = true;
 		else if (arg == "--no-drop-dash") drop_dash = false;
 		else if (arg == "--windowed") screen_choice = 0;
@@ -703,6 +740,7 @@ int main(int argc, char **argv)
 		{
 			std::printf("usage: sonic-pocket [cartridge] [--interpreter] [--japanese] [--scale N]\n"
 					"                    [--aspect original|16:10|16:9] [--refresh auto|60|90|120] [--fps N]\n"
+					"                    [--vsync auto|on|off]\n"
 					"                    [--no-smoothing] [--no-subpixel]\n"
 					"                    [--scale-mode sharp|integer|nearest] [--frame-delay auto|off|MS]\n"
 					"                    [--audio-latency FRAMES] [--drop-dash | --no-drop-dash]\n"
@@ -868,6 +906,8 @@ int main(int argc, char **argv)
 #endif
 	// One picture per refresh of the monitor, unless a rate was asked for or
 	// the driver cannot wait for the refresh.
+	if (fps == 0 && vsync_mode == 2)
+		fps = CLOCK_PACED_FPS;
 	bool vsync = fps == 0;
 	if (vsync && !SDL_SetRenderVSync(renderer, 1))
 	{
@@ -1005,6 +1045,14 @@ int main(int argc, char **argv)
 	bool running = true;
 	PresentStats present_stats, clock_stats;
 	const uint64_t started_at = SDL_GetTicksNS();
+
+	// With --vsync auto, the first seconds show whether the display can be waited for: if
+	// pictures reach it well below its rate, or very unevenly, the rest of the run is paced by the
+	// clock (as a virtual machine's display needs).
+	const double display_period = period;
+	bool vsync_checked = !(vsync && vsync_mode == 0);
+	uint64_t check_start = 0, check_previous = 0;
+	int check_count = 0, check_uneven = 0;
 
 	// Input latency: when each press arrived (the event's own time), until the
 	// game frame that reads it has run and its picture has been presented. This is
@@ -1331,6 +1379,35 @@ int main(int argc, char **argv)
 		SDL_RenderPresent(renderer);
 		const uint64_t shown = SDL_GetTicksNS();
 		present_stats.present(shown);
+		if (!vsync_checked && shown - started_at > 1000000000ull)
+		{
+			if (check_start == 0)
+				check_start = check_previous = shown;
+			else
+			{
+				const double interval = static_cast<double>(shown - check_previous);
+				check_previous = shown;
+				++check_count;
+				if (interval < 0.6 * display_period || interval > 1.4 * display_period)
+					++check_uneven;
+				const double span = static_cast<double>(shown - check_start);
+				if (span >= 3e9)
+				{
+					vsync_checked = true;
+					const double expected = span / display_period;
+					if (check_count < 0.85 * expected || check_uneven > 0.25 * check_count)
+					{
+						std::printf("vsync: %d pictures in %.1f s on a %.0f Hz display, %d of them unevenly spaced: "
+								"pacing by the clock at %d a second (--vsync on keeps waiting for the display)\n",
+								check_count, span / 1e9, 1e9 / display_period, check_uneven, CLOCK_PACED_FPS);
+						vsync = false;
+						SDL_SetRenderVSync(renderer, 0);
+						fps = CLOCK_PACED_FPS;
+						next_present = shown;
+					}
+				}
+			}
+		}
 		if (shown - started_at > 1000000000ull)
 			for (uint64_t pressed : input_read)
 				if (shown >= pressed)
